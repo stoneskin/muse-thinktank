@@ -1,0 +1,13 @@
+{
+  "generated": "2026-10-11",
+  "files": {
+    "questions-v1.json": "625440a688430cf78d01abdec9d8565c656d4ad1ecda5eefcf33013339570ff9",
+    "questions-v2.json": "7c5182d435179f133e4bffd0b60932ba974f7de93337114fa7f6f5c1b1f314f4",
+    "questions-v3.json": "b02c9bf2fb3c9d1f35494e5dbc3d9b460e63329d7e64cac44d3c607a8ba4badd",
+    "s4_iv.csv": "7486d64dee8c0116a40bdbc248e83b9d7b232adaec31d1726385b11341608410",
+    "s5_stocks.csv": "7f33d00b513b0d6dd3204ad4c66a5b0be687e95db4a1633c6e7dad0b85a70383",
+    "s6_trades.csv": "3793b5bbafd7d8a43f9591aab1fccc619e0b73c293542643bfbe9abbef8315e9",
+    "s7_data.csv": "63fdaf11a91d7917235fa12f730c706073b6dc138072068675543de8cbd2911f"
+  },
+  "note": "SHA-256 of private eval questions/data. When questions are open-sourced (planned 6 months after evaluated models' training cutoff), verify against this manifest to confirm untampered."
+}

@@ -2,27 +2,45 @@
 
 Multi-model evaluation harness and results, powered by Muse (Meta).
 
-This repo contains the **methodology, results, and model profiles** from systematic
-evaluations of LLMs on two dimensions: **stock trading analysis** and **code/design**.
+Two things live here: **(1)** an eval harness that benchmarks LLMs on stock
+trading analysis and code/design, with published rubrics and results;
+**(2)** the design doc for a multi-model "think tank" scheduler (fan-out →
+judge → synth). They share the same repo because the scheduler was built
+to run these evals — but they are independent artifacts.
+
+## Quickstart
+
+```bash
+# Runners need only Python 3.10+ stdlib. Set your key:
+export OPENROUTER_API_KEY=sk-or-...
+
+# Dry run with the sample question:
+python docs/eval/run_stock.py --models <model-id> \
+    --questions examples/sample_questions.json \
+    --out-dir /tmp/eval-out
+
+# See docs/eval/methodology.md for scoring rubrics.
+```
+
+Full question sets are private (anti-contamination); see below.
 
 ## What's here
 
-- `docs/model-profiles.md` — Living capability profiles for each tested model:
-  stock score / code score / notes. Updated from real API calls, never from model names.
-- `docs/eval/` — Evaluation reports:
-  - `mainstream-models/2026-10-11.md` — 11 US/China flagship models × 6 questions
-  - `stock-v2-2026-10-11.md` / `stock-v3-2026-10-11.md` — Harder stock question iterations
-  - `method-review-*.md` — Multi-model panel reviews of the eval methodology itself
-- `docs/eval/run_stock.py`, `run_code.py` — Eval runners with budget guardrails
-  (per-model cost cap, fail-fast on repeated failures, honest ledger).
-- `docs/design.md` — Design doc for the think-tank scheduler (multi-model fan-out
-  → judge → synth).
+- `docs/eval/methodology.md` — **Scoring rubrics**, anti-contamination policy,
+  budget guardrails. Start here to understand or reproduce results.
+- `docs/model-profiles.md` — Living capability profiles: stock score / code
+  score / notes per model. From real API calls, never from model names.
+- `docs/eval/` — Reports (`mainstream-models/`, `stock-v2/`, `stock-v3/`),
+  method reviews, runner scripts, and `questions-manifest.json`
+  (SHA-256 of private questions for future verification).
+- `docs/design.md` — Think-tank scheduler design (separate from the eval harness).
+- `examples/` — Question file JSON schema + a sample question.
 
 ## What's NOT here
 
-Eval questions and raw model outputs are kept in a private repo to avoid
-contamination (models training on the test set). The runners expect a questions
-JSON file; see the scripts for the format.
+Eval questions and raw model outputs are private (see `methodology.md`).
+Planned open-source: 6 months after evaluated models' training cutoff,
+verifiable against `questions-manifest.json`.
 
 ## Key findings (2026-10-11)
 
@@ -33,6 +51,11 @@ JSON file; see the scripts for the format.
   best value overall.
 - **Methodology lesson**: Numerical questions don't differentiate LLMs;
   engineering judgment under constraints does.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Real API calls only — never score
+from a model's name.
 
 ## License
 

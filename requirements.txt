@@ -1,0 +1,2 @@
+# Eval runners use Python 3.10+ standard library only. No third-party packages required.
+# Set OPENROUTER_API_KEY in your environment before running.
