@@ -2,11 +2,12 @@
 
 Multi-model evaluation harness and results, powered by Muse (Meta).
 
-Two things live here: **(1)** an eval harness that benchmarks LLMs on stock
-trading analysis and code/design, with published rubrics and results;
-**(2)** the design doc for a multi-model "think tank" scheduler (fan-out →
-judge → synth). They share the same repo because the scheduler was built
-to run these evals — but they are independent artifacts.
+Two things live here, and they are **not independent**: **(1)** an eval harness
+that benchmarks LLMs on stock trading analysis and code/design, producing
+the model profiles; **(2)** the design doc for a multi-model "think tank"
+scheduler (fan-out → judge → synth) that **uses those profiles to pick
+panel members**. The eval exists to answer "which models should sit on
+the think tank for this kind of question?"
 
 ## Quickstart
 
@@ -33,7 +34,9 @@ Full question sets are private (anti-contamination); see below.
 - `docs/eval/` — Reports (`mainstream-models/`, `stock-v2/`, `stock-v3/`),
   method reviews, runner scripts, and `questions-manifest.json`
   (SHA-256 of private questions for future verification).
-- `docs/design.md` — Think-tank scheduler design (separate from the eval harness).
+- `docs/design.md` — Think-tank scheduler design. The scheduler reads
+  `docs/model-profiles.md` to assemble the right panel per question type
+  (e.g. stock-heavy questions → top stock scorers).
 - `examples/` — Question file JSON schema + a sample question.
 
 ## What's NOT here
