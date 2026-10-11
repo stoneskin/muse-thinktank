@@ -65,8 +65,9 @@ P1 hidden tests are generated per-run (not in the prompt) to prevent memorizatio
 - This public repo publishes a **SHA-256 manifest** (`questions-manifest.json`)
   so future question releases can be verified untampered.
 - Questions are rotated each major version (v1 → v2 → v3).
-- Planned release schedule: questions open-sourced 6 months after the evaluated
-  models' training cutoff.
+- Planned release: questions stay private by default; open-sourced only if there
+  is concrete demand or a specific need. The manifest lets anyone verify
+  untampered questions if/when that happens.
 
 ## Budget guardrails
 

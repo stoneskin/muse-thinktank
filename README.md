@@ -42,7 +42,7 @@ Full question sets are private (anti-contamination); see below.
 ## What's NOT here
 
 Eval questions and raw model outputs are private (see `methodology.md`).
-Planned open-source: 6 months after evaluated models' training cutoff,
+They stay private by default and are open-sourced only on concrete demand,
 verifiable against `questions-manifest.json`.
 
 ## Key findings (2026-10-11)

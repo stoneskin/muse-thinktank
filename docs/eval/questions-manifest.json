@@ -9,5 +9,5 @@
     "s6_trades.csv": "3793b5bbafd7d8a43f9591aab1fccc619e0b73c293542643bfbe9abbef8315e9",
     "s7_data.csv": "63fdaf11a91d7917235fa12f730c706073b6dc138072068675543de8cbd2911f"
   },
-  "note": "SHA-256 of private eval questions/data. When questions are open-sourced (planned 6 months after evaluated models' training cutoff), verify against this manifest to confirm untampered."
+  "note": "SHA-256 of private eval questions/data. Questions stay private by default; if open-sourced on demand, verify against this manifest to confirm untampered."
 }
