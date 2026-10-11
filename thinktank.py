@@ -1,548 +1,33 @@
-#!/usr/bin/env python3
-"""muse-thinktank v0.3b -- multi-model deliberation orchestrator.
+"""muse-thinktank v0.4 -- multi-model deliberation orchestrator.
 
-panel -> dual-judge -> synth/verdict, over OpenRouter /chat/completions.
-Python standard library only. Reads OPENROUTER_API_KEY from the environment.
-
-v0.3a (P0 reliability):
-- Dual-judge cross-validation: two heterogeneous judges score independently;
-  auto-pass only on agreement, else escalate to human.
-- Dynamic member selection: schedule_score = capability × availability
-  (sliding-window success rate × latency factor); < 0.6 filtered out.
-- Debate convergence: disagreement entropy tracked per round; stops when
-  entropy plateaus for 2 rounds (scaffolded for multi-round, currently 1).
-
-v0.3b (freshness):
-- Real-time data injection (--context-data): Muse pre-searches key facts
-  and injects them into panel prompts with a [实时数据] marker. Panel
-  models use injected numbers instead of stale training memory.
-- Panel system prompt declares knowledge cutoff and bans fabricating numbers.
-
-Usage:
-    OPENROUTER_API_KEY=... thinktank.py ask \
-        --models m1,m2,m3 --judge-model mj [--judge-model2 mj2] \
-        [--show-all] [--verdict] [--synth-model ms] \
-        [--budget 2.0] [--panel-timeout 120] [--max-tokens 800] \
-        [--temperature 0.7] [--free-only --free-state PATH] \
-        [--member-state PATH] [--capability-scores PATH] \
-        [--estimate] [--prices PATH] [--no-health-check] \
-        "question"
-
-Modes:
-    default    dual-judge -> synth  (final answer on stdout)
-    --verdict  judges pick winner, winner's answer printed as-is (saves 1 call)
-    --show-all print every answer + judge recommendation; the human judges.
-    --estimate print the run plan (calls, worst-case tokens/cost/time) and exit
-               without calling any API. Used for zero-round trigger confirm:
-               show the estimate, user replies go / revise.
-
-Judge contract (v0.2): the judge must return a strict JSON schema with a
-per-answer decision (verdict: accept|reject|escalate, severity:
-critical|major|minor|nitpick, evidence). The code validates the schema;
-a non-compliant judge output counts as judge failure and falls back to
-human verdict. verdict=escalate forces human verdict. severity=nitpick
-decisions are filtered out before synth.
-
-Dual-judge contract (v0.3a): with --judge-model2, both judges run in parallel
-on the same answers. Auto-pass requires: same winner (or both null) AND
-no escalate from either AND no critical disagreement on any single answer
-(one accept + one reject on the same id = escalate). Otherwise the run
-drops to --show-all mode for human verdict. Judge bias is tracked:
-per-judge accept/reject rates are logged to --member-state for drift detection.
-
-Dynamic member selection (v0.3a): --member-state keeps a sliding window
-(last 20) of {ok, latency} per model. availability = success_rate *
-(1 / (1 + mean_latency/10)). schedule_score = capability × availability
-(capability from --capability-scores JSON, default 1.0). Models with
-schedule_score < 0.6 are filtered before the panel. State is updated
-after every run.
-
-Cost fail-closed (v0.2): before phase 1 the worst-path cost is computed
-(max tokens x prices). Unknown price for a paid model, or worst cost over
---budget, aborts the run before any call. --prices takes a JSON file or
-string: {"model-id": {"input": 0.27, "output": 1.10}} ($ per 1M tokens).
-Free-only runs are $0 by construction.
-
-Health check (v0.2): each panel model gets a lightweight ping before the
-panel; dead models are dropped for this run (logged). All dead -> abort
-fail-closed. Disable with --no-health-check.
-
-Exit codes: 0 ok, 2 no usable answer (fail-closed), 3 budget exceeded.
-Progress goes to stderr; the final result goes to stdout.
+CLI entry point. Core logic lives in the tt/ package.
 """
+
 import argparse
 import concurrent.futures as cf
-import datetime as dt
 import json
 import os
-import re
 import sys
 import time
-import urllib.error
-import urllib.request
 
-API = "https://openrouter.ai/api/v1/chat/completions"
-CATALOG = "https://openrouter.ai/api/v1/models"
-
-
-def log(msg):
-    print("[thinktank] " + msg, file=sys.stderr, flush=True)
-
-
-def api_key():
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    if not key:
-        print("error: OPENROUTER_API_KEY is not set", file=sys.stderr)
-        raise SystemExit(2)
-    return key
-
-
-def chat(model, messages, max_tokens, temperature, timeout, key):
-    """One chat completion. Returns dict(text, usage, cost, error, elapsed,
-    truncated, finish_reason)."""
-    payload = {"model": model, "messages": messages,
-               "max_tokens": max_tokens, "temperature": temperature}
-    req = urllib.request.Request(
-        API, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json",
-                 "User-Agent": "muse-thinktank/0.1",
-                 "Authorization": "Bearer " + key})
-    t0 = time.time()
-
-    def fail(reason):
-        return {"text": "", "usage": {}, "cost": 0.0, "error": reason,
-                "elapsed": time.time() - t0, "truncated": False,
-                "finish_reason": ""}
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.load(resp)
-    except urllib.error.HTTPError as exc:
-        try:
-            body = exc.read().decode("utf-8", "replace")[:300]
-        except Exception:
-            body = ""
-        return fail("HTTP %d: %s" % (exc.code, body))
-    except Exception as exc:
-        return fail("network: %s" % exc)
-    err = data.get("error")
-    if err:
-        return fail("API: %s" % json.dumps(err)[:300])
-    choices = data.get("choices") or []
-    text = ""
-    finish_reason = ""
-    if choices:
-        text = (choices[0].get("message", {}).get("content") or "").strip()
-        finish_reason = choices[0].get("finish_reason") or ""
-    usage = data.get("usage") or {}
-    try:
-        cost = float(usage.get("cost") or 0)
-    except (ValueError, TypeError):
-        cost = 0.0
-    return {"text": text, "usage": usage, "cost": cost, "error": None,
-            "elapsed": time.time() - t0,
-            "truncated": finish_reason == "length",
-            "finish_reason": finish_reason}
-
-
-def free_ids(state_path):
-    """Exact verified-free ids from a models.py scan report (fresh or cached)."""
-    report = None
-    if state_path and os.path.exists(state_path):
-        try:
-            report = json.load(open(state_path))
-            age = (dt.datetime.now(dt.timezone.utc)
-                   - dt.datetime.fromisoformat(report["checked_at"]))
-            if age > dt.timedelta(hours=24) or "free" not in report:
-                report = None
-        except (ValueError, KeyError, OSError):
-            report = None
-    if report is None:
-        req = urllib.request.Request(CATALOG,
-                                     headers={"User-Agent": "muse-thinktank/0.1"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            entries = json.load(resp).get("data", [])
-
-        def z(v):
-            try:
-                return float(v) == 0
-            except (ValueError, TypeError):
-                return False
-
-        free = []
-        for m in entries:
-            pr = m.get("pricing") or {}
-            if z(pr.get("prompt")) and z(pr.get("completion")):
-                free.append(m["id"])
-        return set(free)
-    return set(m["id"] for m in report["free"])
-
-
-def resolve_free(model_id, known):
-    """Fail-closed: exact verified-free id, or :free auto-correct with warning,
-    else refuse. A missing :free suffix silently routes to the PAID variant."""
-    model_id = (model_id or "").strip()
-    if model_id in known:
-        return model_id
-    suffixed = model_id if model_id.endswith(":free") else model_id + ":free"
-    if suffixed in known:
-        log("WARNING: '%s' is not verified-free; using '%s'. "
-            "Calling '%s' directly would use the PAID variant."
-            % (model_id, suffixed, model_id))
-        return suffixed
-    raise SystemExit("error: '%s' is not a verified-free model id. "
-                     "Refusing: calling it could incur charges." % model_id)
-
-
-JUDGE_SYSTEM = "你是中立裁判。只输出 JSON，不要输出其他文字。"
-
-JUDGE_TEMPLATE = """以下 {n} 个 AI 模型回答了同一个问题。请裁判并只输出 JSON，严格遵守 schema：
-
-{{"winner": 0,
- "decisions": [{{"id": 0, "verdict": "accept", "severity": "major", "evidence": "一句话证据"}}],
- "consensus": "各家都同意的结论",
- "disagreements": [{{"topic": "", "positions": [{{"answer": 0, "stance": ""}}]}}],
- "unique_insights": [{{"answer": 1, "insight": "只有这家提到的真东西"}}],
- "confidence": "high",
- "rationale": "为什么选它",
- "needs_human": false}}
-
-规则：
-- decisions 必须覆盖全部 {n} 个回答（id 从 0 起）；verdict 只能是 accept|reject|escalate；severity 只能是 critical|major|minor|nitpick；evidence 不许为空。
-- 空答、答非所问、明显幻觉 → verdict=reject，severity=critical，evidence 写明理由；winner 不能是被 reject 的。
-- 拿不准、需要人拍板的 → verdict=escalate，needs_human=true。
-- 无明显赢家时 winner=null。
-- critique 按 severity 标注；nitpick 不计入胜负、不进入终审。
-
-{answers}"""
-
-SYNTH_SYSTEM = "你是综合者。直接输出最终答案，不要解释过程。"
-
-SYNTH_TEMPLATE = """根据裁判报告和各家原答案，写出最终答案。
-规则：遇到矛盾先停——存疑的前提必须先解决/丢弃/对冲，不许在上面堆结论；
-fragile_claims 必须对冲表述、不许当事实写；
-severity=nitpick 的 critique 已被过滤，不用管。
-
-裁判报告：
-{judge}
-
-原答案：
-{answers}"""
-
-
-def extract_json(text):
-    try:
-        return json.loads(text)
-    except (ValueError, TypeError):
-        pass
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except ValueError:
-            return None
-    return None
-
-
-VERDICTS = ("accept", "reject", "escalate")
-SEVERITIES = ("critical", "major", "minor", "nitpick")
-
-
-def validate_judge(j, n):
-    """Strict judge-contract check. Returns (ok, reason)."""
-    if not isinstance(j, dict):
-        return False, "judge 输出不是 JSON object"
-    w = j.get("winner")
-    if not (w is None or (isinstance(w, int) and not isinstance(w, bool)
-                           and 0 <= w < n)):
-        return False, "winner 非法（必须是 0-%d 的下标或 null）" % (n - 1)
-    ds = j.get("decisions")
-    if not isinstance(ds, list) or len(ds) != n:
-        return False, "decisions 必须覆盖全部 %d 个回答" % n
-    seen = set()
-    for d in ds:
-        if not isinstance(d, dict):
-            return False, "decision 不是 object"
-        i = d.get("id")
-        if not isinstance(i, int) or isinstance(i, bool) \
-                or not (0 <= i < n) or i in seen:
-            return False, "decision id 非法"
-        seen.add(i)
-        if d.get("verdict") not in VERDICTS:
-            return False, "verdict 非法（只许 accept|reject|escalate）"
-        if d.get("severity") not in SEVERITIES:
-            return False, "severity 非法"
-        if not isinstance(d.get("evidence"), str) or not d["evidence"].strip():
-            return False, "evidence 不许为空"
-    if j.get("confidence") not in ("high", "medium", "low"):
-        return False, "confidence 非法"
-    rej = {d["id"] for d in ds if d["verdict"] == "reject"}
-    if isinstance(w, int) and w in rej:
-        return False, "winner 不能是被 reject 的"
-    return True, ""
-
-
-def normalize_judge(j, n):
-    """Validate against the v0.2 contract; fall back to the legacy shape
-    (winner/rejected/reasons/confidence) and normalize it. Returns the
-    normalized dict, or None when the judge output is unusable."""
-    if isinstance(j, dict):
-        ok, _ = validate_judge(j, n)
-        if ok:
-            return j
-        rej = j.get("rejected")
-        if isinstance(rej, list):
-            rej_ids = {i for i in rej
-                       if isinstance(i, int) and not isinstance(i, bool)
-                       and 0 <= i < n}
-            j2 = dict(j)
-            j2["decisions"] = [
-                {"id": i,
-                 "verdict": "reject" if i in rej_ids else "accept",
-                 "severity": "critical" if i in rej_ids else "minor",
-                 "evidence": "legacy judge format"}
-                for i in range(n)]
-            ok2, _ = validate_judge(j2, n)
-            if ok2:
-                log("judge 用了旧格式，已兼容转换")
-                return j2
-    return None
-
-
-def judge_needs_human(j):
-    if not isinstance(j, dict):
-        return False
-    if j.get("needs_human"):
-        return True
-    return any(d.get("verdict") == "escalate"
-               for d in j.get("decisions", []) if isinstance(d, dict))
-
-
-def load_prices(spec):
-    """--prices: JSON string or path to JSON file:
-    {"model-id": {"input": 0.27, "output": 1.10}} ($ per 1M tokens)."""
-    if not spec:
-        return {}
-    text = spec
-    if os.path.exists(spec):
-        text = open(spec).read()
-    try:
-        data = json.loads(text)
-    except ValueError:
-        raise SystemExit("error: --prices 解析失败（不是合法 JSON）")
-    if not isinstance(data, dict):
-        raise SystemExit("error: --prices 必须是 {model: {input, output}}")
-    return data
-
-
-def worst_case_cost(models, judge_models, synth_model, question, max_tokens,
-                   prices, free_set):
-    """Worst-path cost in USD, or (None, missing_model) when a paid model
-    has no price entry. Free-verified models cost $0 by construction."""
-    unknown = []
-    per1m = {}
-    for m in set(models + judge_models + [synth_model]):
-        base = m[:-5] if m.endswith(":free") else m
-        if m.endswith(":free") or base in free_set or m in free_set:
-            # :free 后缀 = 明确走免费端点；free_set 覆盖无后缀的免费 id
-            per1m[m] = (0.0, 0.0)
-        elif m in prices:
-            p = prices[m]
-            try:
-                per1m[m] = (float(p["input"]), float(p["output"]))
-            except (KeyError, ValueError, TypeError):
-                unknown.append(m)
-        else:
-            unknown.append(m)
-    if unknown:
-        return None, unknown[0]
-    # worst case: every call maxes out completions; prompts ~ chars/4
-    judge_max = max(900, max_tokens)
-    synth_max = max(1200, max_tokens)
-    q_tok = len(question) / 4.0
-    total = 0.0
-    for m in models:
-        pi, po = per1m[m]
-        total += q_tok / 1e6 * pi + max_tokens / 1e6 * po
-    # judge prompt carries all answers at worst-case length
-    judge_prompt = (len(models) * max_tokens * 2 + len(question)) / 4.0
-    for jm in judge_models:
-        pj_i, pj_o = per1m[jm]
-        total += judge_prompt / 1e6 * pj_i + judge_max / 1e6 * pj_o
-    ps_i, ps_o = per1m[synth_model]
-    total += judge_prompt / 1e6 * ps_i + synth_max / 1e6 * ps_o
-    return total, None
-
-
-def health_check(models, key, timeout=20):
-    """Lightweight ping per model before the panel. Returns (alive, spent).
-    A model that errors or returns empty is dropped for this run.
-    Note: max_tokens must be generous (>=50) -- some free models return
-    empty with finish_reason=length when the token budget is tiny."""
-    alive, spent = [], 0.0
-    for m in models:
-        r = chat(m, [{"role": "user",
-                      "content": "Reply with the single word: ok"}],
-                 50, 0.0, timeout, key)
-        spent += r["cost"]
-        if not r["error"] and r["text"].strip():
-            alive.append(m)
-        else:
-            log("health-check: %s 不可用（%s），本轮剔除"
-                % (m, r["error"] or "空返回"))
-    return alive, spent
-
-
-# ---- v0.3b: real-time data injection ----
-
-PANEL_SYSTEM = """你的训练数据有知识截止日期，之后的具体数字（股价、财报、增长率、PE 等）可能已过时。
-规则：
-1. 先用【实时数据】区块中的数字做分析，不要用你记忆中的旧数字。
-2. 如果【实时数据】没有某个数字，标注 [数据缺失] 而不是编造。
-3. 框架性判断（逻辑、风险类别、方法论）可以用你的知识，不受影响。"""
-
-
-def load_context_data(path):
-    """{"preamble": str, "facts": {key: value}} or None."""
-    if path and os.path.exists(path):
-        try:
-            d = json.load(open(path))
-            return d if isinstance(d, dict) else None
-        except (ValueError, OSError):
-            pass
-    return None
-
-
-def build_panel_prompt(question, ctx):
-    """Append [实时数据] block if context data is provided."""
-    if not ctx:
-        return question
-    facts = ctx.get("facts", {})
-    lines = ["", "【实时数据】（调度器实时搜索注入，请优先使用以下数字，不要用训练记忆中的旧值）"]
-    if ctx.get("preamble"):
-        lines.append(ctx["preamble"])
-    for k, v in facts.items():
-        lines.append("- %s：%s" % (k, v))
-    as_of = ctx.get("as_of", "")
-    if as_of:
-        lines.append("（数据时间：%s）" % as_of)
-    return question + "\n" + "\n".join(lines)
-
-MEMBER_WINDOW = 20  # sliding window size for availability tracking
-MEMBER_MIN_SCORE = 0.6  # schedule_score below this -> filtered out
-
-
-def load_member_state(path):
-    """{model_id: {"ok": [bool...], "lat": [float...], "judge_accept": int,
-    "judge_reject": int}} — sliding windows, newest last."""
-    if path and os.path.exists(path):
-        try:
-            return json.load(open(path))
-        except (ValueError, OSError):
-            pass
-    return {}
-
-
-def save_member_state(path, state):
-    if not path:
-        return
-    try:
-        json.dump(state, open(path, "w"), ensure_ascii=False, indent=1)
-    except OSError as exc:
-        log("member-state 保存失败：%s" % exc)
-
-
-def record_member(state, model, ok, latency):
-    e = state.setdefault(model, {"ok": [], "lat": [],
-                                 "judge_accept": 0, "judge_reject": 0})
-    e["ok"].append(bool(ok))
-    e["lat"].append(float(latency))
-    e["ok"] = e["ok"][-MEMBER_WINDOW:]
-    e["lat"] = e["lat"][-MEMBER_WINDOW:]
-
-
-def record_judge(state, judge_model, n_accept, n_reject):
-    e = state.setdefault(judge_model, {"ok": [], "lat": [],
-                                       "judge_accept": 0, "judge_reject": 0})
-    e["judge_accept"] += n_accept
-    e["judge_reject"] += n_reject
-
-
-def availability(model, state):
-    """success_rate * (1 / (1 + mean_latency/120)). No history -> 1.0.
-    Latency penalty is gentle: 60s -> 0.67x, 120s -> 0.5x. Reliability
-    (success rate) dominates, not speed."""
-    e = state.get(model)
-    if not e or not e["ok"]:
-        return 1.0
-    sr = sum(e["ok"]) / len(e["ok"])
-    ml = sum(e["lat"]) / len(e["lat"]) if e["lat"] else 0
-    return sr * (1.0 / (1.0 + ml / 120.0))
-
-
-def load_capability_scores(path):
-    """{model_id: 0.0-1.0}. Missing file or missing model -> 1.0."""
-    if path and os.path.exists(path):
-        try:
-            d = json.load(open(path))
-            return d if isinstance(d, dict) else {}
-        except (ValueError, OSError):
-            pass
-    return {}
-
-
-def select_members(models, state, cap_scores):
-    """Filter by schedule_score = capability × availability."""
-    kept, dropped = [], []
-    for m in models:
-        cap = float(cap_scores.get(m, 1.0))
-        avail = availability(m, state)
-        score = cap * avail
-        if score >= MEMBER_MIN_SCORE:
-            kept.append(m)
-            log("成员选择：%s 通过（能力 %.2f × 可用 %.2f = %.2f）"
-                % (m, cap, avail, score))
-        else:
-            dropped.append(m)
-            log("成员选择：%s 剔除（%.2f < %.2f）" % (m, score, MEMBER_MIN_SCORE))
-    return kept, dropped
-
-
-# ---- v0.3a: dual-judge cross-validation ----
-
-def judges_agree(j1, j2, n):
-    """Returns (agree, reason). Auto-pass requires same winner (or both
-    null), no escalate from either, and no critical accept/reject split
-    on any single answer."""
-    if j1 is None or j2 is None:
-        return False, "某 judge 输出无效"
-    if j1.get("winner") != j2.get("winner"):
-        return False, "winner 不一致（%s vs %s）" % (j1.get("winner"),
-                                                    j2.get("winner"))
-    d1 = {d["id"]: d for d in j1.get("decisions", [])}
-    d2 = {d["id"]: d for d in j2.get("decisions", [])}
-    for i in range(n):
-        v1 = (d1.get(i) or {}).get("verdict")
-        v2 = (d2.get(i) or {}).get("verdict")
-        if "escalate" in (v1, v2):
-            return False, "回答%d 有 escalate" % i
-        if {v1, v2} == {"accept", "reject"}:
-            return False, "回答%d judge 分歧（accept vs reject）" % i
-    return True, ""
-
-
-def disagreement_entropy(judge, n):
-    """Weighted disagreement mass: sum over answers of severity weight
-    where judges disagree or verdict != accept. Used for convergence
-    tracking across debate rounds (v0.3a: single round scaffold)."""
-    if not judge:
-        return float("inf")
-    w = {"critical": 4.0, "major": 2.0, "minor": 0.5, "nitpick": 0.1}
-    total = 0.0
-    for d in judge.get("decisions", []):
-        if d.get("verdict") != "accept":
-            total += w.get(d.get("severity"), 1.0)
-    return total
+# tt/ package lives alongside this file
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from tt.util import log
+from tt.transport import api_key, chat, health_check, free_ids, resolve_free
+from tt.contracts import (
+    extract_json, validate_judge, normalize_judge, judge_needs_human,
+    judges_agree, disagreement_entropy,
+    JUDGE_SYSTEM, JUDGE_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
+)
+from tt.budget import BudgetExceeded, RuntimeBudget, load_prices, worst_case_cost
+from tt.context import (
+    PANEL_SYSTEM, load_context_data, sanitize_context, build_panel_prompt,
+)
+from tt.members import (
+    load_member_state, save_member_state, record_member, record_judge,
+    availability, load_capability_scores, select_members,
+)
 
 
 def main():
@@ -645,6 +130,8 @@ def main():
     key = api_key()
     spent = 0.0
     t_start = time.time()
+    # v0.4: runtime budget熔断器（线程安全，每次API调用后charge）
+    runtime_budget = RuntimeBudget(a.budget)
 
     # ---- v0.3a: dynamic member selection ----
     member_state = load_member_state(a.member_state)
@@ -684,19 +171,40 @@ def main():
                  a.max_tokens, a.temperature, a.panel_timeout, key)
         return idx, model, r
 
+    # v0.4: global timeout — a stuck panel model can't deadlock the run.
+    panel_timeout = a.panel_timeout + 30
     with cf.ThreadPoolExecutor(max_workers=len(models)) as ex:
         futs = {ex.submit(run_one, i, m): (i, m)
                 for i, m in enumerate(models)}
-        done = 0
-        for fut in cf.as_completed(futs, timeout=a.panel_timeout + 30):
+        done_futs, pending = cf.wait(futs, timeout=panel_timeout,
+                                     return_when=cf.ALL_COMPLETED)
+        for fut in pending:
             i, m = futs[fut]
+            log("[%d/%d] %s 超时（%.0fs），记失败" % (i + 1, len(models), m,
+                                                     panel_timeout))
+            fut.cancel()
+        done = 0
+        for fut in futs:
+            i, m = futs[fut]
+            if fut in pending:
+                answers.append({"model": m, "text": "", "ok": False,
+                                "error": "timeout", "truncated": False})
+                done += 1
+                continue
             try:
-                idx, model, r = fut.result()
+                idx, model, r = fut.result(timeout=0)
             except Exception as exc:
+                model = m
                 r = {"text": "", "cost": 0.0,
                      "error": "worker: %s" % exc, "elapsed": 0}
             done += 1
             spent += r["cost"]
+            # v0.4: runtime budget熔断
+            try:
+                runtime_budget.charge(r["cost"])
+            except BudgetExceeded as be:
+                log("BUDGET熔断：%s -- aborting" % be)
+                raise SystemExit(3)
             if r["error"] or not r["text"]:
                 reason = r["error"] or "empty response"
                 log("[%d/%d] %s FAIL: %s" % (done, len(models), model, reason))
@@ -761,11 +269,36 @@ def main():
         return jm, jr, j
 
     judge_results = {}
+    # v0.4: global timeout for judges — a stuck judge can't deadlock the run.
+    # wait() with timeout, cancel pending, degrade missing results.
+    judge_timeout = a.panel_timeout + 30
     with cf.ThreadPoolExecutor(max_workers=len(judges)) as ex:
         futs = {ex.submit(run_judge, jm): jm for jm in judges}
-        for fut in cf.as_completed(futs, timeout=a.panel_timeout + 30):
-            jm, jr, j = fut.result()
+        done, pending = cf.wait(futs, timeout=judge_timeout,
+                                return_when=cf.ALL_COMPLETED)
+        for fut in pending:
+            jm = futs[fut]
+            log("judge %s 超时（%.0fs），降级跳过" % (jm, judge_timeout))
+            fut.cancel()
+        for fut in futs:
+            jm = futs[fut]
+            if fut in pending:
+                judge_results[jm] = ({"cost": 0, "error": "timeout"}, None)
+                continue
+            try:
+                jm2, jr, j = fut.result(timeout=0)
+            except Exception as exc:
+                log("judge %s 异常：%s" % (jm, exc))
+                judge_results[jm] = ({"cost": 0, "error": str(exc)}, None)
+                continue
             spent += jr["cost"]
+            # v0.4: runtime budget熔断
+            if runtime_budget:
+                try:
+                    runtime_budget.charge(jr["cost"])
+                except BudgetExceeded as be:
+                    log("BUDGET熔断：%s -- aborting" % be)
+                    raise SystemExit(3)
             judge_results[jm] = (jr, j)
             if j is None:
                 log("judge %s 输出无效（%s）" % (jm, jr["error"] or "违反契约"))
@@ -865,6 +398,6 @@ def main():
     log("done in %.1fs, spent $%.4f" % (time.time() - t_start, spent))
     return 0
 
-
 if __name__ == "__main__":
     raise SystemExit(main())
+

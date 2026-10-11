@@ -102,7 +102,7 @@ See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
 
 ## Status
 
-v0.3b (2026-10-12): dual judges, dynamic member selection, real-time data injection (`--context-data`), think-tank review framework. Red-team debate round (M2) pending.
+v0.4 (2026-10-12): 4 code-review blockers fixed — prompt-injection hardening (`sanitize_context`), judge/panel global timeout, runtime budget circuit breaker, split into `tt/` package. Red-team debate round (M2) pending.
 
 ## License
 

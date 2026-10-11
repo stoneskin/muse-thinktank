@@ -102,7 +102,7 @@ python3 thinktank.py ask --member-state ./members.json --capability-scores ./sco
 
 ## 状态
 
-v0.3b（2026-10-12）：双 judge、动态成员选择、实时数据注入（`--context-data`）、智囊团评审框架。red-team 对抗轮（M2）待做。
+v0.4（2026-10-12）：修复 4 个代码评审 blocker——prompt 注入防护（`sanitize_context`）、judge/panel 全局超时、运行时费用熔断器、拆成 `tt/` 包。red-team 对抗轮（M2）待做。
 
 ## License
 
