@@ -155,3 +155,26 @@
 3. **最坏路径封顶价 + 健康检测**：启动前算最坏路径费用——付费模型缺价格表（`--prices`）或超 `--budget` 直接拒绝启动（exit 2/3），免费模式费用恒 $0；panel 前对每模型轻量 ping（max_tokens=50，太小会误杀），死的本轮剔除，全死则 fail-closed。
 
 实现中学到的 quirk：cohere 在 `max_tokens≤20` 时直接 `finish_reason=length` 返回空——health ping 必须 ≥50（已记入模型档案）。
+## 12. v0.3 实现（Stone 2026-10-11 拍板，当天实现+验证）
+
+1. **双 judge 交叉验证**（`--judge-model2`）：两个异构 judge 并行打分，winner 一致才自动通过，否则转人终审。
+2. **动态成员选择**（`--member-state`/`--capability-scores`）：schedule_score = capability × availability；availability 基于滑动窗口成功率 × 温和延迟惩罚（`1/(1+lat/120)`）。
+3. **实时数据注入**（`--context-data`）：Muse 先搜实时数据生成 JSON，panel 用注入数字而非训练记忆。system prompt 声明知识截止、禁编造数字。
+4. **分歧熵脚手架**：每轮计算 disagreement entropy，为未来多轮收敛铺路。
+
+## 13. 智囊团评审框架（Stone 2026-10-12 定）
+
+面向用户的改动（README、示例、公开 API、宣传文案）在合并/发布前走一轮智囊团评审：
+
+1. **触发条件**：改动影响外部读者理解或项目形象时触发；纯内部重构不触发。
+2. **评审维度**（prompt 模板）：
+   - 小白友好：5 分钟能跑起来吗？哪句话会劝退新手？
+   - 老鸟钩子：技术亮点讲清楚了吗？有什么值得 star/PR 的点被埋没了？
+   - 准确性：有没有夸大、过时或与代码不符的描述？
+   - 推广性：有没有一句能拿去发 Twitter/HN 的 slogan？
+3. **执行**：2-3 家模型并行评审 → 双 judge 挑出最有价值的 3-5 条 → 人（Stone）拍板采纳。
+4. **记录**：评审结论记入本节附录，标注日期与版本。
+5. **豁免**：紧急修复可先合并后补评审，但必须在 24h 内补。
+
+### 附录：评审记录
+- 2026-10-12：README 写作评审（ultra-550b + super-120b）。结论：6 节结构（Hero/快跑/架构/对比表/进阶/贡献）；小白三手法（一键 demo、对比表、init 向导）；老鸟三钩子（双 judge、--context-data、fail-open）；slogan："One prompt, a council of models, zero hallucinations."

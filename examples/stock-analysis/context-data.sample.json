@@ -1,0 +1,14 @@
+{
+  "preamble": "Real-time data searched by orchestrator before panel run",
+  "as_of": "2026-10-11",
+  "facts": {
+    "TSLA price": "$382.70 (close)",
+    "52-week range": "$297.38 - $498.83",
+    "TTM PE": "~354x",
+    "Market cap": "$1.51T",
+    "Next earnings": "2026-10-20 after close, consensus EPS $0.45",
+    "Key resistance": "$387-393",
+    "Key support": "$373 (200-day MA), $350 (annual line)"
+  },
+  "_note": "Illustrative sample. In production, build this from live search per input-checklist.md. Mark unavailable fields as [数据缺失] rather than guessing."
+}
