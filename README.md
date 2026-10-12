@@ -6,9 +6,16 @@
 
 [中文版](README_zh.md)
 
-**Built for Muse users.** A multi-model deliberation orchestrator: one question goes to N models in parallel (panel), dual judges cross-validate, synth merges into a verdict. Pure Python standard library, zero dependencies.
+**Built for Muse users.** A multi-model deliberation orchestrator (multi-agent debate / LLM ensemble / AI council): one question goes to N models in parallel (panel), dual judges cross-validate, synth merges into a verdict. Pure Python standard library, zero dependencies.
 
 **Model providers:** OpenRouter today; more carriers planned (see Roadmap).
+
+## Who is this for?
+
+- **Muse users** who want a second (third, fourth…) opinion before acting
+- **Developers** who want multi-model code review on a PR before merging
+- **Analysts** who need cross-validated answers with real-time data injected
+- Anyone who's been burned by a single model's confident hallucination
 
 ```
 Your question → [panel: N models in parallel] → [judge ×2 cross-validation] → [synth merge] → verdict
