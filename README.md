@@ -97,6 +97,12 @@ See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
   GitHub PR; the diff is fetched automatically and a multi-model panel
   reviews the actual code. (This repo's own PR #1 was reviewed this way.)
 
+## Philosophy
+
+[The human–AI relationship](docs/human-ai-relationship.md) — why this tool
+exists: AI amplifies human capability, but direction and taste are forever
+human. ([中文版](docs/human-ai-relationship_zh.md))
+
 ## Contributing & Roadmap
 
 - Issues / PRs welcome; look for the `good first issue` label

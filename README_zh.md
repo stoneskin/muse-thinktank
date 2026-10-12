@@ -94,6 +94,10 @@ python3 thinktank.py ask --member-state ./members.json --capability-scores ./sco
 - **[股票分析](examples/stock-analysis/)**——用 `--context-data` 注入实时行情数据；panel 基于新鲜数字推理，而不是陈旧的训练记忆。
 - **[代码评审](examples/code-review/)**——`--pr-diff` 指向公开 GitHub PR，自动拉 diff，多模型 panel 评审真实代码。（本仓库的 PR #1 就是这么评审的。）
 
+## 理念
+
+[人与 AI 的关系](docs/human-ai-relationship_zh.md)——为什么做这个工具：AI 放大人的能力，但方向和品味永远是人的。([English](docs/human-ai-relationship.md))
+
 ## 贡献 & 路线图
 
 - 提 Issue / PR 欢迎，`good first issue` 标签见 Issues 页
