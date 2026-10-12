@@ -165,3 +165,97 @@ Judge report:
 Original answers:
 {answers}"""
 
+
+# ---- v0.5 red-team contracts ----
+
+CRITIC_SYSTEM = "You are a red-team attacker. Output JSON only, no other text."
+
+CRITIC_TEMPLATE = """You are attacking a draft answer. Find its weaknesses — do NOT praise it.
+Output JSON only, strictly following the schema:
+
+{{"findings": [{{"severity": "critical", "category": "factual|logical|tone|missing", "line": "exact quoted line or phrase", "attack": "one-sentence specific criticism"}}]}}
+
+Severity guide:
+- critical: would undermine credibility if published (false claim, logical hole, disprovable statement)
+- major: weakens the piece significantly (overpromise, hand-waving, unaddressed objection)
+- minor: should be fixed but not embarrassing (awkward phrasing, weak transition)
+- nitpick: trivial style preference — still list it, it will be filtered later
+
+Attack angles:
+1. Factual overclaims: statements that can't be verified or are likely false
+2. Logical gaps: conclusions that don't follow from premises
+3. Skeptic test: what would a hostile expert reader challenge?
+4. Tone: hype, defensiveness, condescension, weasel words
+5. Missing objections: strongest counter-argument the draft doesn't address
+
+Draft to attack:
+{draft}
+
+Original question (for context):
+{question}"""
+
+
+def validate_critic(c):
+    """Validate red-team critic output. Returns (ok, reason)."""
+    if not isinstance(c, dict):
+        return False, "critic output is not a JSON object"
+    fs = c.get("findings")
+    if not isinstance(fs, list):
+        return False, "findings must be a list"
+    for f in fs:
+        if not isinstance(f, dict):
+            return False, "finding is not an object"
+        if f.get("severity") not in SEVERITIES:
+            return False, "invalid severity in finding"
+        if f.get("category") not in ("factual", "logical", "tone", "missing"):
+            return False, "invalid category in finding"
+        if not isinstance(f.get("line"), str) or not f["line"].strip():
+            return False, "line must not be empty"
+        if not isinstance(f.get("attack"), str) or not f["attack"].strip():
+            return False, "attack must not be empty"
+    return True, ""
+
+
+REDTEAM_JUDGE_SYSTEM = "You are a red-team adjudicator. Output JSON only, no other text."
+
+REDTEAM_JUDGE_TEMPLATE = """{n} critics attacked the same draft. Adjudicate their findings and output JSON only:
+
+{{"verdict": "revise|accept",
+ "findings": [{{"severity": "critical", "category": "", "line": "", "attack": "", "keep": true}}],
+ "summary": "one-paragraph assessment of whether the draft survives",
+ "confidence": "high"}}
+
+Rules:
+- Merge duplicate findings (same line, same point) — keep the sharpest wording.
+- Re-grade severity if a critic over- or under-rated. Be strict: most "major" claims are "minor".
+- keep=false for nitpicks and for attacks that are wrong (the critic misread the draft).
+- verdict=revise if any critical or major findings survive with keep=true; otherwise accept.
+- findings must be a list; each needs severity (critical|major|minor|nitpick), category, line, attack, keep (boolean).
+
+Critic outputs:
+{critics}
+
+Original draft:
+{draft}"""
+
+
+def validate_redteam_judge(j):
+    """Validate red-team adjudicator output. Returns (ok, reason)."""
+    if not isinstance(j, dict):
+        return False, "not a JSON object"
+    if j.get("verdict") not in ("revise", "accept"):
+        return False, "verdict must be revise|accept"
+    fs = j.get("findings")
+    if not isinstance(fs, list):
+        return False, "findings must be a list"
+    for f in fs:
+        if not isinstance(f, dict):
+            return False, "finding is not an object"
+        if f.get("severity") not in SEVERITIES:
+            return False, "invalid severity"
+        if not isinstance(f.get("keep"), bool):
+            return False, "keep must be boolean"
+    if j.get("confidence") not in ("high", "medium", "low"):
+        return False, "invalid confidence"
+    return True, ""
+
