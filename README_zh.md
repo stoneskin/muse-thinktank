@@ -112,6 +112,11 @@ python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
 # 股票 40% + 代码 40% + 量化 20%，归一化到 0.0-1.0。
 # 每次更新 profiles.md 后重新生成。
 
+# 备选模型（v0.5）：panel 掉人自动顶上
+python3 thinktank.py ask --models <A>,<B> --backup-models <C>,<D> --min-panel 2 "..."
+# panel 低于 --min-panel 时（health check 或中途掉线），备选按顺序顶上。
+# 顶完还不够才 fail-closed。
+
 # 红队模式（v0.5）：critics 攻击初稿，adjudicator 按严重性分级
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \
