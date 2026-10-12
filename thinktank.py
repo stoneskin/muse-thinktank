@@ -163,6 +163,11 @@ def main():
     ap.add_argument("--capability-scores", default=None,
                     help="v0.3a: JSON {model: 0.0-1.0} capability scores; "
                          "missing model defaults to 1.0")
+    ap.add_argument("--priors", action="store_true",
+                    help="v0.5: fetch public benchmark priors (LMArena + "
+                         "OpenRouter, keyless, 6h cache) and use as "
+                         "capability scores; own v1/v3 scores via "
+                         "--capability-scores override these")
     ap.add_argument("--context-data", default=None,
                     help="v0.3b: JSON file with real-time data to inject into "
                          "panel prompts. Format: {\"preamble\": \"...\", "
@@ -290,7 +295,18 @@ def main():
     # ---- v0.3a: dynamic member selection ----
     member_state = load_member_state(a.member_state)
     cap_scores = load_capability_scores(a.capability_scores)
-    if a.member_state or a.capability_scores:
+    if a.priors:
+        # v0.5: public benchmark priors as base; own scores override
+        from tt.priors import build_priors, match_priors_to_models
+        try:
+            priors = match_priors_to_models(build_priors(), models)
+            for m, s in priors.items():
+                cap_scores.setdefault(m, s)
+            log("priors: public benchmark scores loaded for %d models "
+                "(own --capability-scores take precedence)" % len(priors))
+        except Exception as e:
+            log("priors fetch failed (%s), continuing without" % e)
+    if a.member_state or a.capability_scores or a.priors:
         models, dropped = select_members(models, member_state, cap_scores)
         if not models:
             log("fail-closed: dynamic member selection dropped all models")
