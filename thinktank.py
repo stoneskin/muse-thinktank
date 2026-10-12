@@ -168,6 +168,13 @@ def main():
                          "OpenRouter, keyless, 6h cache) and use as "
                          "capability scores; own v1/v3 scores via "
                          "--capability-scores override these")
+    ap.add_argument("--backup-models", default=None,
+                    help="v0.5: comma-separated backup model ids; if panel "
+                         "drops below --min-panel, backups are promoted "
+                         "in order")
+    ap.add_argument("--min-panel", type=int, default=2,
+                    help="v0.5: minimum panel size; backups fill the gap, "
+                         "fail-closed if still below")
     ap.add_argument("--context-data", default=None,
                     help="v0.3b: JSON file with real-time data to inject into "
                          "panel prompts. Format: {\"preamble\": \"...\", "
@@ -259,6 +266,9 @@ def main():
         print("  judge: %s  synth: %s" % (judges_str, synth_model))
         if a.red_team:
             print("  red-team: ON (%d critics + adjudicator)" % n_critics)
+        if a.backup_models:
+            n_backup = len([m for m in a.backup_models.split(",") if m.strip()])
+            print("  backups: %d (min panel %d)" % (n_backup, a.min_panel))
         print("  API calls: %d (panel %d + judge %d + synth 1%s)"
               % (n_calls, len(models), n_judges,
                  " + critics %d + adjudicator 1" % n_critics
@@ -320,11 +330,26 @@ def main():
             raise SystemExit(2)
 
     # ---- pre-panel health check ----
+    backups = ([m.strip() for m in a.backup_models.split(",") if m.strip()]
+               if a.backup_models else [])
     if not a.no_health_check:
         models, hc_spent = health_check(models, key)
         spent += hc_spent
+        # v0.5: promote backups if below min panel size
+        if len(models) < a.min_panel and backups:
+            need = a.min_panel - len(models)
+            promoted, hc2 = health_check(backups[:need], key)
+            spent += hc2
+            models.extend(promoted)
+            backups = backups[need:]
+            if promoted:
+                log("backups promoted: %s" % ", ".join(promoted))
         if not models:
             log("fail-closed: all models failed health check, refusing empty run")
+            raise SystemExit(2)
+        if len(models) < a.min_panel:
+            log("fail-closed: panel %d < min %d, no backups left"
+                % (len(models), a.min_panel))
             raise SystemExit(2)
         log("health-check passed %d models" % len(models))
 
@@ -420,8 +445,51 @@ def main():
     if spent > a.budget:
         log("budget $%.2f exceeded after panel -- aborting" % a.budget)
         raise SystemExit(3)
+    # v0.5: if panel fell below min, try remaining backups
+    if len(ok_answers) < a.min_panel and backups:
+        need = a.min_panel - len(ok_answers)
+        log("panel %d < min %d, trying %d backups"
+            % (len(ok_answers), a.min_panel, min(need, len(backups))))
+        b_models, bhc = health_check(backups[:need], key)
+        spent += bhc
+        backups = backups[need:]
+        if b_models:
+            # run backups through phase 1
+            with cf.ThreadPoolExecutor(max_workers=len(b_models)) as ex2:
+                bfuts = {}
+                for bm in b_models:
+                    prompt = build_panel_prompt(a.question, ctx_data)
+                    if a.pr_diff and diff:
+                        prompt = ("=== PR DIFF ===\n%s\n=== END ===\n\n%s"
+                                  % (diff, prompt))
+                    bfuts[ex2.submit(chat, bm,
+                                     ([{"role": "system", "content": panel_system}]
+                                      if panel_system else []) +
+                                     [{"role": "user", "content": prompt}],
+                                     a.max_tokens, a.temperature,
+                                     a.panel_timeout, key)] = bm
+                for fut in cf.as_completed(bfuts):
+                    bm = bfuts[fut]
+                    try:
+                        r = fut.result()
+                    except Exception as e:
+                        log("backup %s exception: %s" % (bm, e))
+                        continue
+                    spent += r["cost"]
+                    if r["error"] or not r["text"]:
+                        log("backup %s failed (%s)"
+                            % (bm, r["error"] or "empty"))
+                        continue
+                    ok_answers.append({"model": bm, "text": r["text"],
+                                       "ok": True, "error": None,
+                                       "truncated": r["truncated"]})
+                    log("backup %s promoted to panel" % bm)
     if not ok_answers:
         log("fail-closed: no usable answer from panel -- refusing to synthesize")
+        raise SystemExit(2)
+    if len(ok_answers) < a.min_panel:
+        log("fail-closed: panel %d < min %d after backups"
+            % (len(ok_answers), a.min_panel))
         raise SystemExit(2)
     log("estimated %.0fs more for judge + synth" % phase1_elapsed)
 
