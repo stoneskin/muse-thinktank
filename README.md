@@ -2,6 +2,8 @@
 
 > **One prompt, a council of models, zero hallucinations.**
 
+![muse-thinktank AI think tank](docs/thinktank-promo.webp)
+
 [中文版](README_zh.md)
 
 **Built for Muse users.** A multi-model deliberation orchestrator: one question goes to N models in parallel (panel), dual judges cross-validate, synth merges into a verdict. Pure Python standard library, zero dependencies.
