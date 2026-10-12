@@ -2,6 +2,8 @@
 
 > **One prompt, a council of models, zero hallucinations.**
 
+![muse-thinktank AI 智囊团](docs/thinktank-promo.webp)
+
 [English](README.md)
 
 **为 Muse 用户打造。**多模型智囊团编排器：一个问题并行发给 N 个模型（panel），双 judge 交叉验证，synth 综合出结论。纯 Python 标准库，零依赖。
