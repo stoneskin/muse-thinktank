@@ -52,7 +52,7 @@ flowchart LR
     S --> O[结论]
 ```
 
-核心文件就一个：`thinktank.py`（纯标准库，`urllib` + `json` + `argparse`）。
+入口就一个：`thinktank.py` + `tt/` 包（纯标准库，`urllib` + `json` + `argparse`）。
 
 **AI 助手**：看 [AI_SETUP.md](AI_SETUP.md) 获取机器可读的安装与操作指令。
 

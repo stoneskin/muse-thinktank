@@ -17,7 +17,7 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 > **New here?** Start with the [User Guide](docs/USER-GUIDE.md) — from zero to your first run in 15 minutes.
-> （新手？先看[用户使用说明](docs/USER-GUIDE_zh.md)——15 分钟跑起第一个智囊团。）
+> （中文用户：先看[用户使用说明](docs/USER-GUIDE_zh.md)。)
 
 ## Quickstart
 
@@ -52,7 +52,7 @@ flowchart LR
     S --> O[verdict]
 ```
 
-One core file: `thinktank.py` (stdlib only: `urllib` + `json` + `argparse`).
+One entry point: `thinktank.py` + `tt/` package (stdlib only: `urllib` + `json` + `argparse`).
 
 **AI assistants**: see [AI_SETUP.md](AI_SETUP.md) for machine-readable install & operate instructions.
 
