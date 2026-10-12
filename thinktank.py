@@ -62,6 +62,9 @@ def main():
                     help="judge picks winner; print winner's answer as-is")
     ap.add_argument("--budget", type=float, default=2.0,
                     help="USD; abort remaining calls when exceeded")
+    ap.add_argument("--budget-headroom", type=float, default=1.1,
+                    help="v0.4: runtime budget aborts at budget * headroom "
+                         "(default 1.1)")
     ap.add_argument("--panel-timeout", type=float, default=120)
     ap.add_argument("--max-tokens", type=int, default=800)
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -146,7 +149,7 @@ def main():
     spent = 0.0
     t_start = time.time()
     # v0.4: runtime budget circuit breaker (thread-safe, charge after each API call)
-    runtime_budget = RuntimeBudget(a.budget)
+    runtime_budget = RuntimeBudget(a.budget, a.budget_headroom)
 
     # ---- v0.3a: dynamic member selection ----
     member_state = load_member_state(a.member_state)
