@@ -21,6 +21,16 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 
 ## Quickstart
 
+**No terminal?** Copy-paste this into your Muse chat window:
+
+```
+Please help me install this open-source project: https://github.com/stoneskin/muse-thinktank
+Follow the steps in AI_SETUP.md in the repo.
+When you need an API key, stop and tell me to get one free at https://openrouter.ai/keys first.
+```
+
+**Prefer the terminal?**
+
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # get one free at https://openrouter.ai/keys
 python3 thinktank.py ask \
