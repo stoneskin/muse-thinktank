@@ -43,9 +43,9 @@ def load_prices(spec):
     try:
         data = json.loads(text)
     except ValueError:
-        raise SystemExit("error: --prices 解析失败（不是合法 JSON）")
+        raise SystemExit("error: --prices parse failed (not valid JSON)")
     if not isinstance(data, dict):
-        raise SystemExit("error: --prices 必须是 {model: {input, output}}")
+        raise SystemExit("error: --prices must be {model: {input, output}}")
     return data
 
 
@@ -58,7 +58,7 @@ def worst_case_cost(models, judge_models, synth_model, question, max_tokens,
     for m in set(models + judge_models + [synth_model]):
         base = m[:-5] if m.endswith(":free") else m
         if m.endswith(":free") or base in free_set or m in free_set:
-            # :free 后缀 = 明确走免费端点；free_set 覆盖无后缀的免费 id
+            # :free suffix = explicitly free endpoint; free_set covers free ids without suffix
             per1m[m] = (0.0, 0.0)
         elif m in prices:
             p = prices[m]

@@ -27,7 +27,7 @@ def save_member_state(path, state):
     try:
         json.dump(state, open(path, "w"), ensure_ascii=False, indent=1)
     except OSError as exc:
-        log("member-state 保存失败：%s" % exc)
+        log("member-state save failed: %s" % exc)
 
 
 def record_member(state, model, ok, latency):
@@ -78,9 +78,9 @@ def select_members(models, state, cap_scores):
         score = cap * avail
         if score >= MEMBER_MIN_SCORE:
             kept.append(m)
-            log("成员选择：%s 通过（能力 %.2f × 可用 %.2f = %.2f）"
+            log("member selected: %s passed (capability %.2f x availability %.2f = %.2f)"
                 % (m, cap, avail, score))
         else:
             dropped.append(m)
-            log("成员选择：%s 剔除（%.2f < %.2f）" % (m, score, MEMBER_MIN_SCORE))
+            log("member dropped: %s (%.2f < %.2f)" % (m, score, MEMBER_MIN_SCORE))
     return kept, dropped

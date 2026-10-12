@@ -129,6 +129,6 @@ def health_check(models, key, timeout=20):
         if not r["error"] and r["text"].strip():
             alive.append(m)
         else:
-            log("health-check: %s 不可用（%s），本轮剔除"
-                % (m, r["error"] or "空返回"))
+            log("health-check: %s unavailable (%s), dropped this round"
+                % (m, r["error"] or "empty response"))
     return alive, spent

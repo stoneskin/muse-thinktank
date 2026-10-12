@@ -49,7 +49,7 @@ def main():
                     help="v0.3b: JSON file with real-time data to inject into "
                          "panel prompts. Format: {\"preamble\": \"...\", "
                          "\"facts\": {\"key\": \"value\"}}. Injected after "
-                         "the question with a [实时数据] marker.")
+                         "the question with a [real-time data] marker.")
     ap.add_argument("--synth-model", default=None,
                     help="default: same as --judge-model")
     ap.add_argument("--show-all", action="store_true",
@@ -99,38 +99,38 @@ def main():
                       + max(1200, a.max_tokens))
         judges_str = a.judge_model + (" + " + a.judge_model2
                                       if a.judge_model2 else "")
-        print("智囊团运行预估（最坏路径，v0.3a）：")
-        print("  模型：%s" % ", ".join(models))
-        print("  judge：%s  synth：%s" % (judges_str, synth_model))
-        print("  API 调用：%d（panel %d + judge %d + synth 1）"
+        print("Thinktank run estimate (worst path, v0.4):")
+        print("  models: %s" % ", ".join(models))
+        print("  judge: %s  synth: %s" % (judges_str, synth_model))
+        print("  API calls: %d (panel %d + judge %d + synth 1)"
               % (n_calls, len(models), n_judges))
-        print("  completion tokens 上限：%d" % worst_comp)
+        print("  completion tokens cap: %d" % worst_comp)
         if worst is None:
-            print("  费用上限：无法预估（缺 %s 的价格，用 --prices 提供）"
+            print("  cost cap: cannot estimate (missing price for %s, provide via --prices)"
                   % missing)
         else:
-            print("  费用上限：$%.4f（预算 $%.2f）" % (worst, a.budget))
+            print("  cost cap: $%.4f (budget $%.2f)" % (worst, a.budget))
         worst_secs = a.panel_timeout * 3
-        print("  耗时：最长约 %.0f 分钟（超时上限），通常 1-3 分钟"
+        print("  time: up to ~%.0f min (timeout cap), typically 1-3 min"
               % (worst_secs / 60))
-        print("回复 去=开工，改=调整模型/预算。")
+        print("Reply go=start, change=adjust models/budget.")
         return 0
 
     if worst is None:
-        print("error: 无法预估 %s 的费用（缺价格表），拒绝启动。"
-              "用 --prices 提供 {model: {input, output}}（$/1M tokens）。"
+        print("error: cannot estimate cost for %s (no price table), refusing to start."
+              "Provide via --prices {model: {input, output}} ($/1M tokens)."
               % missing, file=sys.stderr)
         raise SystemExit(2)
     if worst > a.budget:
-        print("error: 最坏路径费用 $%.4f 超过预算 $%.2f，拒绝启动。"
+        print("error: worst-path cost $%.4f exceeds budget $%.2f, refusing to start."
               % (worst, a.budget), file=sys.stderr)
         raise SystemExit(3)
-    log("最坏路径费用 $%.4f ≤ 预算 $%.2f，通过" % (worst, a.budget))
+    log("worst-path cost $%.4f <= budget $%.2f, OK" % (worst, a.budget))
 
     key = api_key()
     spent = 0.0
     t_start = time.time()
-    # v0.4: runtime budget熔断器（线程安全，每次API调用后charge）
+    # v0.4: runtime budget circuit breaker (thread-safe, charge after each API call)
     runtime_budget = RuntimeBudget(a.budget)
 
     # ---- v0.3a: dynamic member selection ----
@@ -139,7 +139,7 @@ def main():
     if a.member_state or a.capability_scores:
         models, dropped = select_members(models, member_state, cap_scores)
         if not models:
-            log("fail-closed: 动态成员选择剔除了所有模型")
+            log("fail-closed: dynamic member selection dropped all models")
             raise SystemExit(2)
 
     # ---- pre-panel health check ----
@@ -147,14 +147,14 @@ def main():
         models, hc_spent = health_check(models, key)
         spent += hc_spent
         if not models:
-            log("fail-closed: 所有模型健康检测失败，拒绝空跑")
+            log("fail-closed: all models failed health check, refusing empty run")
             raise SystemExit(2)
-        log("health-check 通过 %d 个模型" % len(models))
+        log("health-check passed %d models" % len(models))
 
     # ---- v0.3b: load real-time context data ----
     ctx_data = load_context_data(a.context_data)
     if ctx_data:
-        log("实时数据注入：%d 个事实" % len(ctx_data.get("facts", {})))
+        log("real-time data injected: %d facts" % len(ctx_data.get("facts", {})))
     panel_question = build_panel_prompt(a.question, ctx_data)
     panel_system = PANEL_SYSTEM if ctx_data else None
 
@@ -180,7 +180,7 @@ def main():
                                      return_when=cf.ALL_COMPLETED)
         for fut in pending:
             i, m = futs[fut]
-            log("[%d/%d] %s 超时（%.0fs），记失败" % (i + 1, len(models), m,
+            log("[%d/%d] %s timeout (%.0fs), marked failed" % (i + 1, len(models), m,
                                                      panel_timeout))
             fut.cancel()
         done = 0
@@ -199,11 +199,11 @@ def main():
                      "error": "worker: %s" % exc, "elapsed": 0}
             done += 1
             spent += r["cost"]
-            # v0.4: runtime budget熔断
+            # v0.4: runtime budget circuit breaker
             try:
                 runtime_budget.charge(r["cost"])
             except BudgetExceeded as be:
-                log("BUDGET熔断：%s -- aborting" % be)
+                log("BUDGET EXCEEDED: %s -- aborting" % be)
                 raise SystemExit(3)
             if r["error"] or not r["text"]:
                 reason = r["error"] or "empty response"
@@ -213,7 +213,7 @@ def main():
                                 "truncated": False})
             else:
                 ntok = (r["usage"] or {}).get("total_tokens", "?")
-                trunc = " [输出被截断]" if r["truncated"] else ""
+                trunc = " [truncated]" if r["truncated"] else ""
                 log("[%d/%d] %s ok (%.1fs, %s tokens, $%.4f)%s"
                     % (done, len(models), model, r["elapsed"], ntok,
                        r["cost"], trunc))
@@ -237,17 +237,25 @@ def main():
     if not ok_answers:
         log("fail-closed: no usable answer from panel -- refusing to synthesize")
         raise SystemExit(2)
-    log("预计 judge + synth 还需约 %.0fs" % phase1_elapsed)
+    log("estimated %.0fs more for judge + synth" % phase1_elapsed)
 
     # ---- phase 2: judge (v0.3a: dual-judge cross-validation) ----
     t1 = time.time()
     judges = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
     log("phase 2/3 judge: %s" % " + ".join(judges))
+    # v0.4: anonymize answers for judges — model names hidden to mitigate
+    # self-preference bias when a judge is also a panel member.
     ans_block = "\n\n".join(
-        "【回答%d · %s】%s\n%s" % (i, x["model"],
-                                  "（⚠ 输出被截断）" if x["truncated"] else "",
-                                  x["text"])
+        "【Answer %d】%s\n%s" % (i,
+                                " (truncated)" if x["truncated"] else "",
+                                x["text"])
         for i, x in enumerate(ok_answers))
+    # v0.4: warn when a judge overlaps with panel membership
+    for jm in judges:
+        if jm in models:
+            log("WARNING: judge %s is also a panel member "
+                "(self-preference bias possible; answers are anonymized)"
+                % jm)
 
     def run_judge(jm):
         jr = chat(jm,
@@ -278,7 +286,7 @@ def main():
                                 return_when=cf.ALL_COMPLETED)
         for fut in pending:
             jm = futs[fut]
-            log("judge %s 超时（%.0fs），降级跳过" % (jm, judge_timeout))
+            log("judge %s timeout (%.0fs), degraded skip" % (jm, judge_timeout))
             fut.cancel()
         for fut in futs:
             jm = futs[fut]
@@ -288,20 +296,20 @@ def main():
             try:
                 jm2, jr, j = fut.result(timeout=0)
             except Exception as exc:
-                log("judge %s 异常：%s" % (jm, exc))
+                log("judge %s error: %s" % (jm, exc))
                 judge_results[jm] = ({"cost": 0, "error": str(exc)}, None)
                 continue
             spent += jr["cost"]
-            # v0.4: runtime budget熔断
+            # v0.4: runtime budget circuit breaker
             if runtime_budget:
                 try:
                     runtime_budget.charge(jr["cost"])
                 except BudgetExceeded as be:
-                    log("BUDGET熔断：%s -- aborting" % be)
+                    log("BUDGET EXCEEDED: %s -- aborting" % be)
                     raise SystemExit(3)
             judge_results[jm] = (jr, j)
             if j is None:
-                log("judge %s 输出无效（%s）" % (jm, jr["error"] or "违反契约"))
+                log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
             else:
                 log("judge %s: winner=%s confidence=%s"
                     % (jm, j.get("winner"), j.get("confidence")))
@@ -314,9 +322,9 @@ def main():
         dual_ok, dual_reason = judges_agree(judge_list[0], judge_list[1],
                                             len(ok_answers))
         if dual_ok:
-            log("双 judge 一致，通过")
+            log("dual judges agree, passed")
         else:
-            log("双 judge 分歧（%s）→ 升级人终审" % dual_reason)
+            log("dual judges disagree (%s) -> escalate to human" % dual_reason)
             judge = None  # force show-all path
     # v0.3a: disagreement entropy (convergence scaffold)
     entropy = disagreement_entropy(judge, len(ok_answers))
@@ -332,17 +340,17 @@ def main():
     if a.show_all or need_human:
         out = []
         for i, x in enumerate(ok_answers):
-            out.append("===== 回答%d · %s =====" % (i, x["model"]))
+            out.append("===== Answer %d · %s =====" % (i, x["model"]))
             out.append(x["text"])
         if judge is not None:
-            out.append("===== judge 推荐 =====")
+            out.append("===== judge recommendation =====")
             dec_str = "; ".join(
                 "#%d %s/%s" % (d["id"], d["verdict"], d["severity"])
                 for d in judge["decisions"])
             out.append("winner: %s（%s）\ndecisions: %s"
                        % (judge.get("winner"),
                           judge.get("rationale") or "", dec_str))
-            out.append("由人终审：请回复选中的编号。")
+            out.append("Human review: please reply with the chosen number.")
         print("\n\n".join(out))
         # v0.3a: persist member stats (also on human-verdict path)
         if a.member_state:
@@ -364,9 +372,9 @@ def main():
         if isinstance(w, int) and 0 <= w < len(ok_answers) and w not in rej:
             print(ok_answers[w]["text"])
         else:
-            log("judge 无明确 winner，退回并列展示")
+            log("judge has no clear winner, falling back to side-by-side display")
             for i, x in enumerate(usable):
-                print("===== 回答%d · %s =====\n%s\n"
+                print("===== Answer %d · %s =====\n%s\n"
                       % (i, x["model"], x["text"]))
         log("done in %.1fs, spent $%.4f" % (time.time() - t_start, spent))
         return 0
@@ -385,16 +393,16 @@ def main():
               max(1200, a.max_tokens), 0.5, a.panel_timeout, key)
     spent += sr["cost"]
     if sr["error"] or not sr["text"]:
-        log("synth failed (%s) → 降级并列展示" % (sr["error"] or "empty"))
+        log("synth failed (%s) -> degraded side-by-side display" % (sr["error"] or "empty"))
         for i, x in enumerate(usable):
-            print("===== 回答%d · %s =====\n%s\n"
+            print("===== Answer %d · %s =====\n%s\n"
                   % (i, x["model"], x["text"]))
     else:
         print(sr["text"])
     # v0.3a: persist member stats
     if a.member_state:
         save_member_state(a.member_state, member_state)
-        log("成员状态已保存（%d 个模型）" % len(member_state))
+        log("member state saved (%d models)" % len(member_state))
     log("done in %.1fs, spent $%.4f" % (time.time() - t_start, spent))
     return 0
 
