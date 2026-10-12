@@ -107,6 +107,11 @@ python3 thinktank.py ask --show-all "..."
 # Dynamic member selection (remembers model track record)
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
 
+# Generate scores.json from the human-maintained model profiles:
+python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
+# Blends stock 40% + code 40% + quant 20%, normalized to 0.0-1.0.
+# Regenerate after every profiles.md update.
+
 # Red-team mode (v0.5): critics attack the draft, adjudicator grades findings
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \

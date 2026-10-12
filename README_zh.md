@@ -107,6 +107,11 @@ python3 thinktank.py ask --show-all "..."
 # 动态成员选择（跨轮次记住模型表现）
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
 
+# 从人工维护的 model-profiles.md 生成 scores.json：
+python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
+# 股票 40% + 代码 40% + 量化 20%，归一化到 0.0-1.0。
+# 每次更新 profiles.md 后重新生成。
+
 # 红队模式（v0.5）：critics 攻击初稿，adjudicator 按严重性分级
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \
