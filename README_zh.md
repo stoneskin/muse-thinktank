@@ -89,6 +89,11 @@ python3 thinktank.py ask --member-state ./members.json --capability-scores ./sco
 
 看 `examples/stock-analysis/` 了解"先备数据再跑 panel"的完整模式。
 
+## 示例
+
+- **[股票分析](examples/stock-analysis/)**——用 `--context-data` 注入实时行情数据；panel 基于新鲜数字推理，而不是陈旧的训练记忆。
+- **[代码评审](examples/code-review/)**——`--pr-diff` 指向公开 GitHub PR，自动拉 diff，多模型 panel 评审真实代码。（本仓库的 PR #1 就是这么评审的。）
+
 ## 贡献 & 路线图
 
 - 提 Issue / PR 欢迎，`good first issue` 标签见 Issues 页

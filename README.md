@@ -89,6 +89,14 @@ python3 thinktank.py ask --member-state ./members.json --capability-scores ./sco
 
 See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
 
+## Examples
+
+- **[Stock analysis](examples/stock-analysis/)** — inject real-time market data
+  via `--context-data`; panel reasons over fresh numbers, not stale memory.
+- **[Code review](examples/code-review/)** — point `--pr-diff` at a public
+  GitHub PR; the diff is fetched automatically and a multi-model panel
+  reviews the actual code. (This repo's own PR #1 was reviewed this way.)
+
 ## Contributing & Roadmap
 
 - Issues / PRs welcome; look for the `good first issue` label
