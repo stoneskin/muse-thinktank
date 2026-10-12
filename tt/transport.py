@@ -46,9 +46,20 @@ def fetch_pr_diff(pr_url):
 
 
 def api_key():
+    # Try custom.openrouter credential surrogate first, fall back to env var
+    try:
+        import sys
+        sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+        from dynamic_credentials import dynamic_credential_entry
+        entry = dynamic_credential_entry("custom.openrouter", "access_token")
+        surrogate = str(entry["surrogate"]).strip()
+        if surrogate:
+            return surrogate
+    except Exception:
+        pass
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
-        print("error: OPENROUTER_API_KEY is not set", file=sys.stderr)
+        print("error: OPENROUTER_API_KEY is not set and custom.openrouter credential not found", file=sys.stderr)
         raise SystemExit(2)
     return key
 
