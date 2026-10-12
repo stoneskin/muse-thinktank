@@ -6,9 +6,16 @@
 
 [English](README.md)
 
-**为 Muse 用户打造。**多模型智囊团编排器：一个问题并行发给 N 个模型（panel），双 judge 交叉验证，synth 综合出结论。纯 Python 标准库，零依赖。
+**为 Muse 用户打造。**多模型智囊团编排器（multi-agent debate / LLM ensemble / AI council）：一个问题并行发给 N 个模型（panel），双 judge 交叉验证，synth 综合出结论。纯 Python 标准库，零依赖。
 
 **模型渠道：**目前仅支持 OpenRouter，未来会支持更多（见路线图）。
+
+## 适合谁用？
+
+- **Muse 用户**——行动前想多听几个"第二意见"
+- **开发者**——合并前想让多个模型评审 PR 代码
+- **分析师**——需要注入实时数据、交叉验证的答案
+- 任何被单个模型的"自信幻觉"坑过的人
 
 ```
 你的问题 → [panel: N 个模型并行] → [judge ×2 交叉验证] → [synth 综合] → 结论
