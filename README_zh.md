@@ -106,6 +106,14 @@ python3 thinktank.py ask --show-all "..."
 
 # 动态成员选择（跨轮次记住模型表现）
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
+
+# 红队模式（v0.5）：critics 攻击初稿，adjudicator 按严重性分级
+python3 thinktank.py ask --red-team \
+  --models <...> --judge-model <...> \
+  --critic-models <...> \  # 可选，默认用 panel 同批模型
+  "这个架构合理吗？"
+# 输出：RED TEAM REPORT，含 verdict（revise/accept）与分级 findings
+#（critical/major/minor；nitpick 已过滤）
 ```
 
 看 `examples/stock-analysis/` 了解"先备数据再跑 panel"的完整模式。
@@ -132,7 +140,8 @@ python3 thinktank.py ask --member-state ./members.json --capability-scores ./sco
 
 ## 状态
 
-v0.4（2026-10-12）：修复 4 个代码评审 blocker——prompt 注入防护（`sanitize_context`）、judge/panel 全局超时、运行时费用熔断器、拆成 `tt/` 包。red-team 对抗轮（M2）待做。
+v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级。
+v0.4（2026-10-12）：修复 4 个代码评审 blocker——prompt 注入防护（`sanitize_context`）、judge/panel 全局超时、运行时费用熔断器、拆成 `tt/` 包。
 
 ## License
 

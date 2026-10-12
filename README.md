@@ -106,6 +106,14 @@ python3 thinktank.py ask --show-all "..."
 
 # Dynamic member selection (remembers model track record)
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
+
+# Red-team mode (v0.5): critics attack the draft, adjudicator grades findings
+python3 thinktank.py ask --red-team \
+  --models <...> --judge-model <...> \
+  --critic-models <...> \  # optional, defaults to panel models
+  "Is this architecture sound?"
+# Output: RED TEAM REPORT with verdict (revise/accept) and severity-graded
+# findings (critical/major/minor; nitpicks filtered out)
 ```
 
 See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
@@ -137,7 +145,8 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Status
 
-v0.4 (2026-10-12): 4 code-review blockers fixed — prompt-injection hardening (`sanitize_context`), judge/panel global timeout, runtime budget circuit breaker, split into `tt/` package. Red-team debate round (M2) pending.
+v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity.
+v0.4 (2026-10-12): 4 code-review blockers fixed — prompt-injection hardening (`sanitize_context`), judge/panel global timeout, runtime budget circuit breaker, split into `tt/` package.
 
 ## License
 
