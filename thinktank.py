@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tt.util import log
-from tt.transport import api_key, chat, health_check, free_ids, resolve_free
+from tt.transport import api_key, chat, health_check, free_ids, resolve_free, fetch_pr_diff
 from tt.contracts import (
     extract_json, validate_judge, normalize_judge, judge_needs_human,
     judges_agree, disagreement_entropy,
@@ -54,6 +54,11 @@ def main():
                          "panel prompts. Format: {\"preamble\": \"...\", "
                          "\"facts\": {\"key\": \"value\"}}. Injected after "
                          "the question with a [real-time data] marker.")
+    ap.add_argument("--pr-diff", default=None,
+                    help="v0.4: GitHub PR URL "
+                         "(https://github.com/{owner}/{repo}/pull/{n}); "
+                         "fetches the public diff and injects it into the "
+                         "panel prompt for code review")
     ap.add_argument("--synth-model", default=None,
                     help="default: same as --judge-model")
     ap.add_argument("--show-all", action="store_true",
@@ -175,6 +180,15 @@ def main():
         log("real-time data injected: %d facts" % len(ctx_data.get("facts", {})))
     panel_question = build_panel_prompt(a.question, ctx_data)
     panel_system = PANEL_SYSTEM if ctx_data else None
+
+    # ---- v0.4: fetch PR diff for code review ----
+    if a.pr_diff:
+        diff = fetch_pr_diff(a.pr_diff)
+        if diff:
+            panel_question = (
+                "=== PR DIFF (fetched from %s) ===\n%s\n"
+                "=== END PR DIFF ===\n\n%s"
+                % (a.pr_diff, diff, panel_question))
 
     # ---- phase 1: panel ----
     log("phase 1/3 panel: %d models, timeout %gs"

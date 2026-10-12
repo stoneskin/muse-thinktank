@@ -10,6 +10,41 @@ from .util import log
 
 API = "https://openrouter.ai/api/v1/chat/completions"
 
+PR_DIFF_CAP = 12000  # max chars of PR diff injected into prompt
+
+
+def fetch_pr_diff(pr_url):
+    """v0.4: fetch a public GitHub PR diff and return it as text.
+
+    Accepts https://github.com/{owner}/{repo}/pull/{number} (with or
+    without trailing path). Uses the .diff endpoint — no auth needed
+    for public repos. Returns None on any failure (fail-open: the
+    review just runs without the diff).
+    """
+    import re
+    m = re.match(
+        r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url.strip())
+    if not m:
+        log("fetch_pr_diff: not a GitHub PR URL: %s" % pr_url[:80])
+        return None
+    owner, repo, number = m.groups()
+    diff_url = "https://github.com/%s/%s/pull/%s.diff" % (owner, repo, number)
+    try:
+        req = urllib.request.Request(
+            diff_url, headers={"User-Agent": "muse-thinktank/0.4",
+                               "Accept": "text/plain"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        log("fetch_pr_diff failed (%s): %s" % (diff_url, exc))
+        return None
+    if len(text) > PR_DIFF_CAP:
+        text = text[:PR_DIFF_CAP] + "\n...[truncated]"
+    log("PR diff fetched: %d chars from %s/%s#%s"
+        % (len(text), owner, repo, number))
+    return text
+
+
 def api_key():
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
