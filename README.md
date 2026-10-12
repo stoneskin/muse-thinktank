@@ -107,6 +107,11 @@ python3 thinktank.py ask --show-all "..."
 # Dynamic member selection (remembers model track record)
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
 
+# Public benchmark priors (v0.5): LMArena + OpenRouter stability as base scores
+python3 thinktank.py ask --priors --models <...> "..."
+# Blends 70% LMArena capability + 30% stability (model age × rate limits).
+# Your own --capability-scores override priors. 6h local cache, keyless.
+
 # Red-team mode (v0.5): critics attack the draft, adjudicator grades findings
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \
@@ -145,7 +150,7 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Status
 
-v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity.
+v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity; public benchmark priors (`--priors`) — LMArena + OpenRouter stability as base capability scores.
 v0.4 (2026-10-12): 4 code-review blockers fixed — prompt-injection hardening (`sanitize_context`), judge/panel global timeout, runtime budget circuit breaker, split into `tt/` package.
 
 ## License

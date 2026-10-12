@@ -107,6 +107,11 @@ python3 thinktank.py ask --show-all "..."
 # 动态成员选择（跨轮次记住模型表现）
 python3 thinktank.py ask --member-state ./members.json --capability-scores ./scores.json "..."
 
+# 公开榜单先验（v0.5）：LMArena + OpenRouter 稳定性做基础分
+python3 thinktank.py ask --priors --models <...> "..."
+# 70% LMArena 能力分 + 30% 稳定性分（上线天数 × 限流宽松度）。
+# 自己的 --capability-scores 优先覆盖。6 小时本地缓存，免 key。
+
 # 红队模式（v0.5）：critics 攻击初稿，adjudicator 按严重性分级
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \
@@ -140,7 +145,7 @@ python3 thinktank.py ask --red-team \
 
 ## 状态
 
-v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级。
+v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级；公开榜单先验（`--priors`）——LMArena + OpenRouter 稳定性做基础分。
 v0.4（2026-10-12）：修复 4 个代码评审 blocker——prompt 注入防护（`sanitize_context`）、judge/panel 全局超时、运行时费用熔断器、拆成 `tt/` 包。
 
 ## License
