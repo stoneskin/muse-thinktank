@@ -56,6 +56,13 @@ After install, just talk to Muse:
 - **"议一议，PostgreSQL vs MongoDB?"**
 - **"Have a few models debate the risks of this plan"**
 
+Want it torn apart instead of discussed? Ask Muse to **挑刺 / 找茬** (red-team mode):
+
+- **"挑挑刺，这篇文章写得站得住吗？"**
+- **"找找茬，这个方案有什么漏洞？"**
+
+Red-team runs the normal deliberation first, then critics attack the draft and grade every finding (critical/major/minor). You get a report, not just a verdict.
+
 Muse shows you the cost and ETA first (free models = $0). Say "go" and it runs.
 
 ## FAQ
