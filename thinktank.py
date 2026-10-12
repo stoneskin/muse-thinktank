@@ -39,6 +39,10 @@ def main():
     ap.add_argument("--judge-model2", default=None,
                     help="v0.3a: second judge for cross-validation; "
                          "disagreement escalates to human")
+    ap.add_argument("--allow-judge-overlap", action="store_true",
+                    help="v0.4: allow judge model(s) to also be panel members "
+                         "(default: fail-closed; answers are anonymized "
+                         "for judges either way)")
     ap.add_argument("--member-state", default=None,
                     help="v0.3a: JSON file for sliding-window member stats "
                          "(availability tracking)")
@@ -84,9 +88,20 @@ def main():
         log("free-only: %d models resolved against free pool" % len(models))
     synth_model = a.synth_model or a.judge_model
 
+    # v0.4: fail-closed on judge/panel overlap (self-preference bias).
+    # A judge must not deliberate and judge the same question.
+    judge_models = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
+    overlap = [jm for jm in judge_models if jm in models]
+    if overlap and not a.allow_judge_overlap:
+        print("error: judge model(s) %s also in --models panel. "
+              "A judge cannot judge its own deliberation (self-preference "
+              "bias). Use a different --judge-model, or pass "
+              "--allow-judge-overlap to proceed anyway (answers stay "
+              "anonymized for judges)." % ", ".join(overlap))
+        raise SystemExit(2)
+
     # ---- pre-run worst-path cost check (fail-closed for money) ----
     prices = load_prices(a.prices)
-    judge_models = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
     worst, missing = worst_case_cost(models, judge_models, synth_model,
                                      a.question, a.max_tokens, prices,
                                      free_set)
@@ -251,10 +266,11 @@ def main():
                                 x["text"])
         for i, x in enumerate(ok_answers))
     # v0.4: warn when a judge overlaps with panel membership
+    # (only reachable with --allow-judge-overlap)
     for jm in judges:
         if jm in models:
             log("WARNING: judge %s is also a panel member "
-                "(self-preference bias possible; answers are anonymized)"
+                "(explicit --allow-judge-overlap; answers are anonymized)"
                 % jm)
 
     def run_judge(jm):
