@@ -21,6 +21,18 @@
 
 ## 5 分钟快跑
 
+### Muse 聊天窗口安装
+
+复制下面这段到 Muse 聊天窗口：
+
+```
+请帮我安装这个开源项目：https://github.com/stoneskin/muse-thinktank
+按它仓库里 AI_SETUP.md 的步骤操作。
+需要 API key 的地方停下来，先告诉我去 https://openrouter.ai/keys 免费申请一个。
+```
+
+### 终端安装
+
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # https://openrouter.ai/keys 免费获取
 python3 thinktank.py ask \
