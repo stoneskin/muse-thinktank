@@ -97,9 +97,52 @@ def fetch_openrouter_models():
                 "pricing": m.get("pricing", {}),
                 "context_length": m.get("context_length"),
                 "per_request_limits": m.get("per_request_limits"),
+                "created": m.get("created"),
             }
     log("openrouter: %d models%s" % (len(out),
                                      " (cached)" if cached else ""))
+    return out
+
+
+def stability_score(info):
+    """0.0-1.0 stability proxy from OpenRouter metadata.
+
+    Older models with generous rate limits are less likely to 404
+    or disappear overnight. This is a weak signal --聊胜于无.
+    """
+    score = 0.5  # neutral default
+    created = info.get("created")
+    if created:
+        try:
+            age_days = (time.time() - float(created)) / 86400
+            # 0 days -> 0.0, 90+ days -> 0.5 (half the score)
+            score += min(age_days / 90.0, 1.0) * 0.25
+        except (ValueError, TypeError):
+            pass
+    limits = info.get("per_request_limits") or {}
+    # wider limits suggest healthier supply; normalize loosely
+    try:
+        rpm = float(limits.get("requests_per_minute") or 0)
+        if rpm >= 100:
+            score += 0.25
+        elif rpm >= 20:
+            score += 0.15
+        elif rpm > 0:
+            score += 0.05
+    except (ValueError, TypeError):
+        pass
+    return min(max(score, 0.0), 1.0)
+
+
+def build_stability_priors():
+    """Returns {model_id: 0.0-1.0} stability scores for all OR models."""
+    try:
+        models = fetch_openrouter_models()
+    except Exception as e:
+        log("openrouter fetch failed: %s" % e)
+        return {}
+    out = {mid: stability_score(info) for mid, info in models.items()}
+    log("stability priors: %d models" % len(out))
     return out
 
 
@@ -160,15 +203,25 @@ def match_priors_to_models(priors, model_ids):
 
 if __name__ == "__main__":
     import sys
-    priors = build_priors()
-    models = sys.argv[1:] or []
-    if models:
-        matched = match_priors_to_models(priors, models)
-        print(json.dumps(matched, indent=2, ensure_ascii=False))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--stability" in sys.argv:
+        stab = build_stability_priors()
+        if args:
+            for mid in args:
+                print("%-50s %.3f" % (mid, stab.get(mid, 0.5)))
+        else:
+            top = sorted(stab.items(), key=lambda x: -x[1])[:20]
+            for mid, score in top:
+                print("%-50s %.3f" % (mid, score))
     else:
-        # dump top 20 arena/text as sample
-        top = sorted(
-            ((k[6:], v) for k, v in priors.items() if k.startswith("arena:")),
-            key=lambda x: -x[1])[:20]
-        for name, score in top:
-            print("%-40s %.3f" % (name, score))
+        priors = build_priors()
+        if args:
+            matched = match_priors_to_models(priors, args)
+            print(json.dumps(matched, indent=2, ensure_ascii=False))
+        else:
+            # dump top 20 arena/text as sample
+            top = sorted(
+                ((k[6:], v) for k, v in priors.items() if k.startswith("arena:")),
+                key=lambda x: -x[1])[:20]
+            for name, score in top:
+                print("%-40s %.3f" % (name, score))

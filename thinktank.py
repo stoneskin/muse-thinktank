@@ -297,13 +297,20 @@ def main():
     cap_scores = load_capability_scores(a.capability_scores)
     if a.priors:
         # v0.5: public benchmark priors as base; own scores override
-        from tt.priors import build_priors, match_priors_to_models
+        from tt.priors import (build_priors, match_priors_to_models,
+                               build_stability_priors)
         try:
             priors = match_priors_to_models(build_priors(), models)
-            for m, s in priors.items():
-                cap_scores.setdefault(m, s)
-            log("priors: public benchmark scores loaded for %d models "
-                "(own --capability-scores take precedence)" % len(priors))
+            stab = build_stability_priors()
+            for m in models:
+                arena_s = priors.get(m, 0.5)
+                stab_s = stab.get(m, 0.5)
+                # blend: 70% capability, 30% stability
+                blended = 0.7 * arena_s + 0.3 * stab_s
+                cap_scores.setdefault(m, blended)
+            log("priors: public benchmark + stability scores loaded for "
+                "%d models (own --capability-scores take precedence)"
+                % len(models))
         except Exception as e:
             log("priors fetch failed (%s), continuing without" % e)
     if a.member_state or a.capability_scores or a.priors:
