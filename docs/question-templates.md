@@ -21,13 +21,18 @@ the best models start inventing.
 
 ## Universal assembly instructions
 
-Appended to every run automatically — the operator never has to remember them:
+The operator appends these to every run (not yet automated in
+`thinktank.py`) — the operator never has to remember them:
 
 1. The panel restates the question in its own words and confirms understanding
    **before** answering.
 2. Every conclusion is labeled **[verified data]** or **[inference]**.
 3. If the two judges disagree, present the disagreement honestly —
    never fabricate consensus.
+
+**Privacy rule:** redact before submitting. Use placeholders for anything
+sensitive; never paste PII or verbatim private messages — panel context is
+sent to external models.
 
 ## The templates
 
@@ -59,6 +64,9 @@ Use when a trigger fires and a decision is due.
 - **Output structure (six sections):** background → freshness →
   fundamentals (short/long) → technicals (short/long) → handling →
   risks.
+- **Assembled example:** "Signal: [TICKER] closed at [PRICE] vs trigger
+  [TRIGGER] (exposure [X]; plan says: [PLAN-LINE]). Decide: execute /
+  wait / revise the plan."
 
 ### C. Periodic review (quick tier)
 
@@ -70,6 +78,8 @@ Use on a fixed cadence to calibrate the system, not the single decision.
   2. Which standing rules were bent or violated (with instances).
   3. Concrete rule changes, specified down to exact trigger numbers.
   4. What to watch next period.
+- **Assembled example:** "Review week of [DATE]: [N] signals, hit rate
+  [X%], deviations: [LIST]. Find the rule holes."
 
 ### D. Design review (quick or deep, by stakes)
 
@@ -81,18 +91,24 @@ Use at key decision points in a project.
   2. Attack: the three likeliest failure points.
   3. Is there a simpler approach that achieves the same?
   4. Verdict: pass / revise.
+- **Assembled example:** "Decision: [ARCHITECTURE-CHOICE] for [PROJECT]
+  (background: [D<n>]; constraints: [LIST]). Review."
 
 ### E. Offer / career decision (deep tier)
 
 Use for job offers and negotiations.
 
-- **Auto-fill:** the offer email verbatim, current compensation, market data.
+- **Auto-fill:** offer terms, redacted (strip names and company-internal
+  details); current compensation; market data.
 - **Output structure:**
   1. Break down the offer: true value of base / bonus / equity.
   2. Market benchmark.
   3. Negotiation anchors and talking points.
   4. Risks (title regression, commute, scope).
   5. Verdict.
+- **Assembled example:** "Offer: [ROLE] at [COMPANY-TYPE] — base [X],
+  bonus [Y], equity [Z] (all redacted); current [CUR]; reply deadline
+  [DATE]. Verdict: take / reject / negotiate, with anchors."
 
 ### F. Operator self-audit (deep tier)
 
@@ -105,6 +121,8 @@ Use periodically to find the operator's own systematic biases
   1. Top 3 systematic biases, each with instances.
   2. What should have been flagged but wasn't; what was noise.
   3. Improvement list for next period.
+- **Assembled example:** "Audit my [PERIOD] reports (sample [N]): find
+  systematic biases, each with instances."
 
 ## Three cold truths
 
