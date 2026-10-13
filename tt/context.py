@@ -1,6 +1,7 @@
 """v0.4 module: tt/context.py."""
 
 import json
+import os
 import secrets
 
 PANEL_SYSTEM = """Your training data has a knowledge cutoff. Specific numbers after that date (stock prices, earnings, growth rates, PE, etc.) may be outdated.

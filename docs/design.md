@@ -27,6 +27,10 @@
 2. **噪音过滤**：critics 的挑刺按严重性分级（critical/major/minor/nitpick），nitpick 在终审前过滤，只把真问题摆出来。
 3. **人终审**：重要事项 judge 只做分析和噪音过滤，把干净候选 + 分歧点摆出来，**Stone 亲自裁**（对应 opencode-fuse §6.3 的 `--show-all` 用户选择模式）。
 
+**v0.6（2026-10-13）**：judge 容错两层——① 宽容层：枚举大小写不敏感、数字字符串转 int、confidence 缺失默认 medium（不碰语义）；② repair-retry：contract violation 后把具体报错喂回去让模型自修格式，最多 1 次，还不行就 escalate。fail-closed 还在，只是从"一次不过就判死"变成"给一次改错机会"。budget 按 2x judge 成本估算。
+
+**v0.6.1（2026-10-13）**：judge 输入截断——panel 答案太长（9k+ tokens）时 judge 会丢"JSON only"指令。喂给 judge 的每答案截断到 4000 字符；panel 侧 PANEL_SYSTEM 要求 300-600 词（源头控制）。另：repair 加语义漂移检测（winner/verdict 被改则弃用）。
+
 ## 3. 运行规则
 
 ### 3.1 升级规则：免费 → 付费（Stone 2026-10-11 立）
@@ -178,3 +182,35 @@
 
 ### 附录：评审记录
 - 2026-10-12：README 写作评审（ultra-550b + super-120b）。结论：6 节结构（Hero/快跑/架构/对比表/进阶/贡献）；小白三手法（一键 demo、对比表、init 向导）；老鸟三钩子（双 judge、--context-data、fail-open）；slogan："One prompt, a council of models, zero hallucinations."
+## 14. Validator 层与评测 Harness 排查清单（Stone 2026-10-13 定，design 先行）
+
+背景：v3.1 评测实跑验证确认，12 家里 9 家出现"代码对、粘贴输出与实跑不符"（ultra-550b 惯犯×2）。"Benchmark 测的是模型+Harness"——harness 必须自己验证数字，不能信模型贴的。
+
+### 14.1 Validator 层（待实现，先定设计）
+
+**智囊团评审（2026-10-13 快问，ultra-550b + dots-3，judge gemini-3-flash）**：设计意图通过，但挑出三个真 hole → 本节已按评审意见改 v2。
+
+1. **触发条件**：panel/judge 回答同时含代码块 **且** 含"运行输出"/数字结论声明时触发。
+2. **分两期**（评审建议的简化方案）：
+   - **Phase 1（先做）**：格式校验 + 定向抽检。不建全量沙箱——先查输出格式是否合规（JSON/表格/数字结构），不合规标可疑；只对可疑样本 + 已知惯犯（fabrication 黑旗模型）做沙箱实跑或人工抽检。省 infra 成本，误报少。
+   - **Phase 2（后做）**：全量沙箱 diff，解决下面三个 hole 后再上。
+3. **三个 hole 的解法（Phase 2 前提）**：
+   - **映射歧义**：约定配对格式（代码块后紧跟 output 块，或显式编号）；配对不上 → 记 `unverifiable`（待人工），**不记** fabrication。
+   - **环境一致性**：沙箱 pin 死 Python + numpy/pandas/scipy 版本；diff 前归一化非确定字段（时间戳、内存地址）；数字比对用容差（1e-6）不用文本精确匹配；随机性代码要求 seed 或跑 3 次取众数。
+   - **标签三档**：`verified`（一致）/ `needs-review`（环境/映射问题，待人工）/ `fabrication`（明确编造，如数字与代码逻辑不可能得出）。二元标签太武断，三档防噪声污染档案。
+4. **记分**：fabrication 接入模型档案可靠性维度（v3.1 已有黑旗记录：ultra-550b×2、v4-pro、opus-4.6、gemini、cohere、minimax、v3.2、llama、dots-3 各×1；干净：sonnet-5.5、gpt-5-mini）。
+5. **Harness 设计原则**：一次写好、永久生效——validator 是机制不是 prompt，不随模型换而失效。
+
+**实现状态（2026-10-13）**：Phase 1 已实现 → `tt/validator.py`（CLI：`python3 -m tt.validator --file <md> --model <id> [--force]`）。
+v3.1 S6 实测：ultra-550b/v4-pro 的 fabrication 正确检出；sonnet（表格格式）→ format-ok；gpt-5-mini（散文格式）→ unverifiable。
+thinktank.py 运行时接入为 Phase 2，本期不做。
+
+### 14.2 评测 Harness 排查清单（跑分前必过）
+
+模型分数异常时，**先查外壳再下模型结论**：
+
+1. **token 上限**：按模型家族×题型设（GPT-5-mini 长任务 7000、Claude 4000–6000、默认 4500）；截断= harness 问题，重跑再判分（sonnet-5.5 v3 11.0→v3.1 20.0 就是注脚）。
+2. **prompt 格式**：题目 ID 与 batch 文件一致（launcher 启动时 assert，禁用 sed 链改脚本）。
+3. **解析逻辑**：输出解析、文件命名、CSV 列名等有无 bug（如 v3 S6 文件名存错导致 0 分类问题）。
+
+本节为设计先行：实现（validator 代码 + eval 流程接入）待 Stone 看过 design 后再动工。

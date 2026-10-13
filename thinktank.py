@@ -18,7 +18,7 @@ from tt.transport import api_key, chat, health_check, free_ids, resolve_free, fe
 from tt.contracts import (
     extract_json, validate_judge, normalize_judge, judge_needs_human,
     judges_agree, disagreement_entropy,
-    JUDGE_SYSTEM, JUDGE_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
+    JUDGE_SYSTEM, JUDGE_TEMPLATE, REPAIR_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
     CRITIC_SYSTEM, CRITIC_TEMPLATE, validate_critic,
     REDTEAM_JUDGE_SYSTEM, REDTEAM_JUDGE_TEMPLATE, validate_redteam_judge,
 )
@@ -336,14 +336,23 @@ def main():
         models, hc_spent = health_check(models, key)
         spent += hc_spent
         # v0.5: promote backups if below min panel size
-        if len(models) < a.min_panel and backups:
+        # (keep trying backups until min reached or list exhausted)
+        while len(models) < a.min_panel and backups:
             need = a.min_panel - len(models)
             promoted, hc2 = health_check(backups[:need], key)
             spent += hc2
+            n_tried = min(need, len(backups))
+            tried = backups[:n_tried]
+            backups = backups[n_tried:]
+            # drop the ones that failed health check, keep trying rest
+            failed = [m for m in tried if m not in promoted]
+            if failed:
+                log("backups failed health check: %s" % ", ".join(failed))
             models.extend(promoted)
-            backups = backups[need:]
             if promoted:
                 log("backups promoted: %s" % ", ".join(promoted))
+            if not promoted and not backups:
+                break
         if not models:
             log("fail-closed: all models failed health check, refusing empty run")
             raise SystemExit(2)
@@ -513,15 +522,48 @@ def main():
                 % jm)
 
     def run_judge(jm):
-        jr = chat(jm,
-                  [{"role": "system", "content": JUDGE_SYSTEM},
-                   {"role": "user",
-                    "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
-                                                     answers=ans_block)}],
+        msgs = [{"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user",
+                 "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
+                                                  answers=ans_block)}]
+        jr = chat(jm, msgs,
                   max(900, a.max_tokens), 0.3, a.panel_timeout, key)
         raw = extract_json(jr["text"]) if not jr["error"] else None
         j = normalize_judge(raw, len(ok_answers)) \
             if raw is not None else None
+        # v0.6: repair-retry once on contract violation. Feed the specific
+        # schema errors back; the model fixes its own format. Still
+        # fail-closed: one retry max, then escalate as before.
+        if j is None and not jr["error"] and raw is not None:
+            _, errs = validate_judge(raw, len(ok_answers), collect_all=True)
+            log("judge %s contract violation, repair-retry once (%d errors)"
+                % (jm, len(errs)))
+            repair_msgs = msgs + [
+                {"role": "assistant", "content": jr["text"][:2000]},
+                {"role": "user", "content": REPAIR_TEMPLATE.format(
+                    errors="\n".join("- " + e for e in errs[:8]))},
+            ]
+            jr2 = chat(jm, repair_msgs,
+                       max(900, a.max_tokens), 0.3, a.panel_timeout, key)
+            retry_cost = jr["cost"] + jr2["cost"]
+            # v0.4: runtime budget circuit breaker (retry cost counts)
+            if runtime_budget:
+                try:
+                    runtime_budget.charge(jr2["cost"])
+                except BudgetExceeded as be:
+                    log("BUDGET EXCEEDED: %s -- aborting" % be)
+                    raise SystemExit(3)
+            raw2 = extract_json(jr2["text"]) if not jr2["error"] else None
+            j2 = normalize_judge(raw2, len(ok_answers)) \
+                if raw2 is not None else None
+            if j2 is not None:
+                log("judge %s repair-retry succeeded" % jm)
+                jr2["cost"] = retry_cost
+                jr = jr2
+                j = j2
+            else:
+                jr["cost"] = retry_cost
+                log("judge %s repair-retry failed, escalating" % jm)
         # v0.3a: track judge bias stats
         if j is not None and a.member_state:
             n_acc = sum(1 for d in j["decisions"]
