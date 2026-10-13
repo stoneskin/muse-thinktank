@@ -196,27 +196,40 @@ REPAIR_TEMPLATE = """Your previous judge output failed schema validation with th
 Resend ONLY the corrected JSON, no other text. Keep your judgments (winner, verdicts, evidence) exactly the same — fix only the format to match the schema."""
 
 
+def _ci_get(d, key):
+    """大小写不敏感取 dict 值（repair_drifted 需比对未归一化的 raw）。"""
+    if not isinstance(d, dict):
+        return None
+    if key in d:
+        return d[key]
+    lk = key.lower()
+    for k, v in d.items():
+        if isinstance(k, str) and k.lower() == lk:
+            return v
+    return None
+
+
 def _semantic_core(j):
     """提取判断的语义核心 (winner, {id: verdict})，用于检测 repair 语义漂移."""
     if not isinstance(j, dict):
         return None
-    w = j.get("winner")
+    w = _ci_get(j, "winner")
     if isinstance(w, str) and w.strip().lstrip("-").isdigit():
         w = int(w.strip())
     if not (w is None or (isinstance(w, int) and not isinstance(w, bool))):
         w = "?"
     verdicts = {}
-    ds = j.get("decisions")
+    ds = _ci_get(j, "decisions")
     if isinstance(ds, list):
         for d in ds:
             if not isinstance(d, dict):
                 continue
-            i = d.get("id")
+            i = _ci_get(d, "id")
             if isinstance(i, str) and i.strip().lstrip("-").isdigit():
                 i = int(i.strip())
-            v = d.get("verdict")
+            v = _ci_get(d, "verdict")
             if isinstance(v, str):
-                v = v.lower()
+                v = v.lower().strip()
             if isinstance(i, int) and not isinstance(i, bool):
                 verdicts[i] = v
     return (w, verdicts)
