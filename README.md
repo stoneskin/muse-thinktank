@@ -6,16 +6,9 @@
 
 [中文版](README_zh.md)
 
-**Built for Muse users.** A multi-model deliberation orchestrator (multi-agent debate / LLM ensemble / AI council): one question goes to N models in parallel (panel), dual judges cross-validate, synth merges into a verdict. Pure Python standard library, zero dependencies.
+**Built for Muse users.** A multi-model deliberation orchestrator: one question goes to N models in parallel (panel), dual judges cross-validate, synth merges into a verdict. Pure Python standard library, zero dependencies.
 
 **Model providers:** OpenRouter today; more carriers planned (see Roadmap).
-
-## Who is this for?
-
-- **Muse users** who want a second (third, fourth…) opinion before acting
-- **Developers** who want multi-model code review on a PR before merging
-- **Analysts** who need cross-validated answers with real-time data injected
-- Anyone who's been burned by a single model's confident hallucination
 
 ```
 Your question → [panel: N models in parallel] → [judge ×2 cross-validation] → [synth merge] → verdict
@@ -29,18 +22,6 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 > （中文用户：先看[用户使用说明](docs/USER-GUIDE_zh.md)。)
 
 ## Quickstart
-
-### Install via Muse chat
-
-Copy-paste this into your Muse chat window:
-
-```
-Please help me install this open-source project: https://github.com/stoneskin/muse-thinktank
-Follow the steps in AI_SETUP.md in the repo.
-When you need an API key, stop and tell me to get one free at https://openrouter.ai/keys first.
-```
-
-### Install via terminal
 
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # get one free at https://openrouter.ai/keys
@@ -84,6 +65,9 @@ One entry point: `thinktank.py` + `tt/` package (stdlib only: `urllib` + `json` 
 | **Dual-judge cross-validation** | A single judge hallucinating unnoticed | Disagreement auto-escalates to human |
 | **Real-time data injection** (`--context-data`) | Stale training data (e.g. 2024 knowledge answering 2026 stock questions) | Orchestrator pre-searches live data; models analyze real numbers |
 | **Dynamic member selection** | Free models flaky | Auto-filter by historical success rate × latency |
+| **Judge blacklist** (v0.7) | Unreliable judges keep failing | 2 consecutive failures → blacklisted (24h cooldown) |
+| **Anti-fabrication validator** (v0.6) | Models inventing outputs | Validates claimed vs actual runs; flags fabrication |
+| **Chunked PR review** (v0.8/v0.9) | Large diffs crash judges (19k-token inputs) | 4-step pipeline: skeleton → chunk → review → consistency check |
 | **Fail-open / Fail-closed** | One dead model kills the round | Panel degrades gracefully; judges all-down → human |
 | **Disagreement entropy** | No measure of panel divergence | Computed per round; scaffolds multi-round debate |
 
@@ -112,6 +96,11 @@ python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
 # Blends stock 40% + code 40% + quant 20%, normalized to 0.0-1.0.
 # Regenerate after every profiles.md update.
 
+# Public benchmark priors (v0.5): LMArena + OpenRouter stability as base scores
+python3 thinktank.py ask --priors --models <...> "..."
+# Blends 70% LMArena capability + 30% stability (model age × rate limits).
+# Your own --capability-scores override priors. 6h local cache, keyless.
+
 # Backup models (v0.5): fill panel gaps automatically
 python3 thinktank.py ask --models <A>,<B> --backup-models <C>,<D> --min-panel 2 "..."
 # If panel drops below --min-panel (health check or mid-run failures),
@@ -125,6 +114,22 @@ python3 thinktank.py ask --red-team \
 # Output: RED TEAM REPORT with verdict (revise/accept) and severity-graded
 # findings (critical/major/minor; nitpicks filtered out)
 ```
+
+# Chunked PR review (v0.9): 4-step pipeline for large diffs
+python3 thinktank.py ask --pr-diff https://github.com/owner/repo/pull/123 \
+  --chunk-tokens 3000 --models <...> "Review this PR"
+# 1. Skeleton extraction (deterministic, no model call)
+# 2. Split diff by file into ~3k-token chunks
+# 3. Each chunk reviewed with global skeleton + local diff
+# 4. Synth checks cross-file consistency
+# Auto-triggers when diff > 2× chunk-tokens. --chunk-tokens 0 disables.
+
+# Judge blacklist (v0.7): auto-avoid unreliable judges
+# 2 consecutive judge failures → blacklisted for 24h (warning at startup)
+
+# Anti-fabrication validator (v0.6)
+python3 -m tt.validator --file output.md --model <id>
+# Checks if model outputs match actual runs; flags invented results
 
 See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
 
@@ -150,14 +155,17 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Design Docs
 
-[docs/design.md](docs/design.md) (work modes, judge powers, review framework),
-[docs/model-profiles.md](docs/model-profiles.md) (model capability profiles), and
-[docs/question-templates.md](docs/question-templates.md) (four-part brief, 6 scenario templates).
+[docs/design.md](docs/design.md) (work modes, judge powers, review framework) and
+[docs/model-profiles.md](docs/model-profiles.md) (model capability profiles).
 
 ## Status
 
-v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity.
-v0.4 (2026-10-12): 4 code-review blockers fixed — prompt-injection hardening (`sanitize_context`), judge/panel global timeout, runtime budget circuit breaker, split into `tt/` package.
+v0.9 (2026-10-13): chunked PR review — 4-step pipeline (skeleton → chunk → review → consistency check) for large diffs; "skeleton resident, details on demand."
+v0.8 (2026-10-13): map-reduce diff chunking (`--chunk-tokens`).
+v0.7 (2026-10-13): judge blacklist — 2 consecutive failures → 24h cooldown.
+v0.6 (2026-10-13): anti-fabrication validator + judge repair-retry (tolerant JSON parsing).
+v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity; public benchmark priors (`--priors`) — LMArena + OpenRouter stability as base capability scores.
+v0.3b (2026-10-12): dual judges, dynamic member selection, real-time data injection (`--context-data`), think-tank review framework.
 
 ## License
 

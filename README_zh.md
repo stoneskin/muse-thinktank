@@ -6,16 +6,9 @@
 
 [English](README.md)
 
-**为 Muse 用户打造。**多模型智囊团编排器（multi-agent debate / LLM ensemble / AI council）：一个问题并行发给 N 个模型（panel），双 judge 交叉验证，synth 综合出结论。纯 Python 标准库，零依赖。
+**为 Muse 用户打造。**多模型智囊团编排器：一个问题并行发给 N 个模型（panel），双 judge 交叉验证，synth 综合出结论。纯 Python 标准库，零依赖。
 
 **模型渠道：**目前仅支持 OpenRouter，未来会支持更多（见路线图）。
-
-## 适合谁用？
-
-- **Muse 用户**——行动前想多听几个"第二意见"
-- **开发者**——合并前想让多个模型评审 PR 代码
-- **分析师**——需要注入实时数据、交叉验证的答案
-- 任何被单个模型的"自信幻觉"坑过的人
 
 ```
 你的问题 → [panel: N 个模型并行] → [judge ×2 交叉验证] → [synth 综合] → 结论
@@ -29,18 +22,6 @@
 > （New here? Start with the [User Guide](docs/USER-GUIDE.md).）
 
 ## 5 分钟快跑
-
-### Muse 聊天窗口安装
-
-复制下面这段到 Muse 聊天窗口：
-
-```
-请帮我安装这个开源项目：https://github.com/stoneskin/muse-thinktank
-按它仓库里 AI_SETUP.md 的步骤操作。
-需要 API key 的地方停下来，先告诉我去 https://openrouter.ai/keys 免费申请一个。
-```
-
-### 终端安装
 
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # https://openrouter.ai/keys 免费获取
@@ -84,6 +65,9 @@ flowchart LR
 | **双 judge 交叉验证** | 单 judge 自己幻觉没人发现 | winner 不一致自动转人终审 |
 | **实时数据注入** (`--context-data`) | 模型训练数据过时（如 2024 年知识答 2026 年股票） | 调度器先搜实时数据注入，模型用真数字分析 |
 | **动态成员选择** | 免费模型时好时坏 | 按历史成功率 × 延迟自动过滤 |
+| **Judge 黑名单**（v0.7） | 不靠谱的 judge 反复失败 | 连续 2 次失败进黑名单，24 小时冷却 |
+| **防编造校验器**（v0.6） | 模型编造输出 | 校验"声称的运行"vs"实际运行"，抓编造 |
+| **大 diff 切块评审**（v0.8/v0.9） | 大 diff 让 judge 崩溃（19k token 输入） | 四步流水线：骨架→切块→评审→一致性检查 |
 | **Fail-open / Fail-closed** | 某模型挂了整轮报废 | panel 降级继续；judge 全挂转人工 |
 | **分歧熵追踪** | 不知道模型们分歧有多大 | 每轮计算 entropy，为多轮辩论铺路 |
 
@@ -112,6 +96,11 @@ python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
 # 股票 40% + 代码 40% + 量化 20%，归一化到 0.0-1.0。
 # 每次更新 profiles.md 后重新生成。
 
+# 公开榜单先验（v0.5）：LMArena + OpenRouter 稳定性做基础分
+python3 thinktank.py ask --priors --models <...> "..."
+# 70% LMArena 能力分 + 30% 稳定性分（上线天数 × 限流宽松度）。
+# 自己的 --capability-scores 优先覆盖。6 小时本地缓存，免 key。
+
 # 备选模型（v0.5）：panel 掉人自动顶上
 python3 thinktank.py ask --models <A>,<B> --backup-models <C>,<D> --min-panel 2 "..."
 # panel 低于 --min-panel 时（health check 或中途掉线），备选按顺序顶上。
@@ -127,6 +116,15 @@ python3 thinktank.py ask --red-team \
 ```
 
 看 `examples/stock-analysis/` 了解"先备数据再跑 panel"的完整模式。
+
+# 切块 PR 评审（v0.9）：大 diff 四步流水线
+python3 thinktank.py ask --pr-diff https://github.com/owner/repo/pull/123 \
+  --chunk-tokens 3000 --models <...> "Review this PR"
+# 1. 骨架提取（确定性，无模型调用）
+# 2. 按文件切成 ~3k token 的块
+# 3. 每块带着全局骨架独立评审
+# 4. synth 检查跨文件一致性
+# diff > 2× chunk-tokens 时自动触发。--chunk-tokens 0 可关闭。
 
 ## 示例
 
@@ -145,14 +143,17 @@ python3 thinktank.py ask --red-team \
 
 ## 设计文档
 
-见 [docs/design.md](docs/design.md)（工作模式、Judge 三项权力、评审框架）、
-[docs/model-profiles.md](docs/model-profiles.md)（模型能力档案）与
-[docs/question-templates_zh.md](docs/question-templates_zh.md)（四件套、6 套场景模板）。
+见 [docs/design.md](docs/design.md)（工作模式、Judge 三项权力、评审框架）与
+[docs/model-profiles.md](docs/model-profiles.md)（模型能力档案）。
 
 ## 状态
 
-v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级。
-v0.4（2026-10-12）：修复 4 个代码评审 blocker——prompt 注入防护（`sanitize_context`）、judge/panel 全局超时、运行时费用熔断器、拆成 `tt/` 包。
+v0.9（2026-10-13）：切块 PR 评审——四步流水线（骨架→切块→评审→一致性检查），"骨架常驻，细节按需加载"。
+v0.8（2026-10-13）：map-reduce diff 切块（`--chunk-tokens`）。
+v0.7（2026-10-13）：judge 黑名单——连续 2 次失败进黑名单，24 小时冷却。
+v0.6（2026-10-13）：防编造校验器 + judge repair-retry（宽容 JSON 解析）。
+v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级；公开榜单先验（`--priors`）——LMArena + OpenRouter 稳定性做基础分。
+v0.3b（2026-10-12）：双 judge、动态成员选择、实时数据注入（`--context-data`）、智囊团评审框架。
 
 ## License
 
