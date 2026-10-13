@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tt.util import log
 from tt.transport import api_key, chat, health_check, free_ids, resolve_free, fetch_pr_diff
+from tt.chunker import split_diff_by_file
+from tt.skeleton import extract_skeleton, format_skeleton
 from tt.contracts import (
     extract_json, validate_judge, normalize_judge, judge_needs_human,
     judges_agree, disagreement_entropy, repair_drifted,
@@ -186,6 +188,9 @@ def main():
                          "(https://github.com/{owner}/{repo}/pull/{n}); "
                          "fetches the public diff and injects it into the "
                          "panel prompt for code review")
+    ap.add_argument("--chunk-tokens", type=int, default=3000,
+                    help="v0.8: max tokens per diff chunk in map-reduce mode. "
+                         "0 disables chunking.")
     ap.add_argument("--synth-model", default=None,
                     help="default: same as --judge-model")
     ap.add_argument("--red-team", action="store_true",
@@ -338,7 +343,11 @@ def main():
         spent += hc_spent
         # v0.5: promote backups if below min panel size
         # (keep trying backups until min reached or list exhausted)
-        while len(models) < a.min_panel and backups:
+        # v0.7.1: max 3 backup rounds, avoid burning budget on long backup lists
+        MAX_BACKUP_ROUNDS = 3
+        backup_rounds = 0
+        while len(models) < a.min_panel and backups and backup_rounds < MAX_BACKUP_ROUNDS:
+            backup_rounds += 1
             need = a.min_panel - len(models)
             promoted, hc2 = health_check(backups[:need], key)
             spent += hc2
@@ -371,9 +380,61 @@ def main():
     panel_system = PANEL_SYSTEM if ctx_data else None
 
     # ---- v0.4: fetch PR diff for code review ----
+    diff = None
     if a.pr_diff:
         diff = fetch_pr_diff(a.pr_diff)
         if diff:
+            # v0.8: map-reduce -- split large diff by file, review each chunk independently
+            # v0.9: four-step pipeline -- skeleton resident, details on demand
+            diff_tokens = len(diff) // 4
+            if a.chunk_tokens > 0 and diff_tokens > a.chunk_tokens * 2:
+                log("v0.9 chunked mode: diff ~%dk tokens, splitting into ~%d-token chunks"
+                    % (diff_tokens // 1000, a.chunk_tokens))
+                chunks = split_diff_by_file(diff, max_tokens=a.chunk_tokens)
+                log("v0.9: %d chunks" % len(chunks))
+                # step 1: skeleton extraction (deterministic, no model call)
+                skeletons = [extract_skeleton(c_text, fname) for fname, c_text in chunks]
+                skeleton_text = format_skeleton(skeletons)
+                log("v0.9 skeleton: %d files, %d chars" % (len(skeletons), len(skeleton_text)))
+                # step 3: local review (each chunk = global skeleton + current diff)
+                chunk_findings = []
+                for fname, chunk_text in chunks:
+                    chunk_q = ("%s\n\n=== DIFF CHUNK [%s] ===\n%s\n=== END CHUNK ===\n\n"
+                               "You are a code review expert. Above is the global skeleton (interface changes across all files),"
+                               "below is the complete diff for the current file.\n"
+                               "List the 3-5 most important issues (bugs, security, design flaws) as bullets,"
+                               "format: [file:line] issue description -- suggested fix.\n"
+                               "Pay special attention: using the global skeleton, check cross-file consistency (e.g., interface changed but callers not updated)."
+                               "Only report real issues, do not fabricate." % (skeleton_text, fname, chunk_text))
+                    if models:
+                        r = chat(models[0], [{"role": "user", "content": chunk_q}],
+                                 a.max_tokens, 0.7, a.panel_timeout, key)
+                        if not r["error"] and r["text"]:
+                            chunk_findings.append("## %s\n%s" % (fname, r["text"][:2000]))
+                            log("v0.9 chunk %s done (%d chars)" % (fname, len(r["text"])))
+                # step 4: global consistency check + aggregation
+                if chunk_findings:
+                    panel_question = (
+                        "%s\n\n=== CHUNK FINDINGS ===\n%s\n=== END ===\n\n"
+                        "You are a code review expert. Above is the global skeleton and review findings per file.\n"
+                        "Please output the final review report:\n"
+                        "1. 3-5 most important issues (sorted by severity, with file, issue, fix suggestion)\n"
+                        "2. Cross-file consistency: were all callers updated for interface changes?\n"
+                        "Requirement: only use the information above, do not fabricate."
+                        % (skeleton_text, "\n\n".join(chunk_findings)))
+                    log("v0.9: aggregating %d chunk findings via synth" % len(chunk_findings))
+                    synth_model = a.synth_model or a.judge_model
+                    synth_msgs = [
+                        {"role": "system", "content": "You are a code review expert, output the final review report."},
+                        {"role": "user", "content": panel_question},
+                    ]
+                    sr = chat(synth_model, synth_msgs, max(1200, a.max_tokens), 0.3, a.panel_timeout, key)
+                    if not sr["error"]:
+                        print(sr["text"])
+                    else:
+                        log("v0.9 synth failed: %s" % sr["error"])
+                    return
+            # non-chunked mode: original logic
             panel_question = (
                 "=== PR DIFF (fetched from %s) ===\n%s\n"
                 "=== END PR DIFF ===\n\n%s"
@@ -506,7 +567,7 @@ def main():
     # ---- phase 2: judge (v0.3a: dual-judge cross-validation) ----
     t1 = time.time()
     judges = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
-    # v0.7: 黑名单警告 — 连续失败 2 次的 judge 建议别用
+    # v0.7: blacklist warning -- judge with 2 consecutive failures not recommended
     for jm in judges:
         if judge_blacklisted(member_state, jm):
             log("WARNING: judge %s is blacklisted (%d consecutive failures), "
@@ -570,7 +631,7 @@ def main():
             j2 = normalize_judge(raw2, len(ok_answers)) \
                 if raw2 is not None else None
             if j2 is not None:
-                # v0.6.1: 语义漂移检测 — repair 只许改格式，不许改判断
+                # v0.6.1: semantic drift detection -- repair may only fix format, not judgments
                 if repair_drifted(raw, j2):
                     log("judge %s repair changed semantics (winner/verdict drift), "
                         "discarding repair, escalating" % jm)
@@ -626,9 +687,9 @@ def main():
             judge_results[jm] = (jr, j)
             if j is None:
                 log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
-                # v0.7: 记 judge 失败，连续 2 次进黑名单
+                # v0.7: record judge failure, 2 consecutive failures -> blacklist
                 record_judge_fail(member_state, jm)
-                # v0.6.1: 保存失败的原始输出用于诊断（/tmp 下，7 天清理）
+                # v0.6.1: save failed raw output for diagnosis (under /tmp, cleaned after 7 days)
                 try:
                     import time as _t
                     _p = "/tmp/thinktank-judge-fail-%s-%d.txt" % (

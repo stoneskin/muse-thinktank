@@ -31,7 +31,7 @@
 
 **v0.6.1（2026-10-13）**：judge 输入截断——panel 答案太长（9k+ tokens）时 judge 会丢"JSON only"指令（sonnet-5.5 和 minimax 双双零 JSON 输出）。喂给 judge 的每答案截断到 4000 字符。另：repair 加语义漂移检测（winner/verdict 被改则弃用）。panel 侧加软约束：PANEL_SYSTEM 要求 300-600 词（源头控制，judge 截断为兜底）。
 
-**v0.7（2026-10-13）**：judge 黑名单——`tt/members.py` 跟踪 `judge_fail`（contract violation/空输出），连续 2 次失败进黑名单，下次指定时 WARNING 提示换 judge。成功则清零。minimax-m3 已三次掉链，触发黑名单。
+**v0.7（2026-10-13）**：judge 黑名单——`tt/members.py` 跟踪 `judge_fail`（contract violation/空输出），连续 2 次失败进黑名单，下次指定时 WARNING 提示换 judge。成功则清零。minimax-m3 已三次掉链，触发黑名单。**v0.7.1**：黑名单 24 小时冷却自动解禁（熔断器模式）；backup 健康检查最多 3 轮，防止超长 backup 列表烧预算。
 
 ## 3. 运行规则
 
@@ -198,3 +198,41 @@ thinktank.py 运行时接入为 Phase 2，本期不做。
 3. **解析逻辑**：输出解析、文件命名、CSV 列名等有无 bug（如 v3 S6 文件名存错导致 0 分类问题）。
 
 本节为设计先行：实现（validator 代码 + eval 流程接入）待 Stone 看过 design 后再动工。
+
+**v0.9（2026-10-13）**：四步流水线（骨架常驻）——解决切块丢上下文：
+1. 骨架提取：tt/skeleton.py 确定性提取函数/类/import 变更（无模型调用）
+2. 依赖分组：（TODO）AST 找签名变更及其调用者
+3. 局部审查：每块输入 = 全局骨架 + 当前 diff
+4. 全局一致性校验：只查接口，不看实现
+
+## 15. 大 diff 评审的四步流水线（v0.9，2026-10-13）
+
+**问题**：25KB diff 一次性给模型，judge 要处理 19k tokens，弱模型频繁失败。切块后任务变小但丢跨文件上下文。
+
+**解法**：模仿人类 reviewer——"骨架常驻，细节按需加载"。
+
+### 步骤 1：骨架提取（tt/skeleton.py）
+- 确定性提取（正则，无模型调用）：每文件的函数/类增删、import 增删
+- 输出：结构化骨架，通常几千 tokens
+- 代价：零 API 调用
+
+### 步骤 2：依赖分组（TODO）
+- 用 AST 找出"签名变了的定义"及其直接调用者，放同一组
+- 局限：核心 API 大改时退化，需 fallback 到步骤 1+3+4
+
+### 步骤 3：局部审查（并行）
+- 输入：**全局骨架 + 当前文件的完整 diff**
+- 输出：局部 bug + 标 `needs_cross_check` 的疑似跨文件问题
+- 每块 ~3k tokens，模型稳定完成
+
+### 步骤 4：全局一致性校验
+- 输入：所有骨架 + 所有 `needs_cross_check`
+- 只查：接口不匹配、调用链断裂、类型不一致
+- 不看实现细节
+
+### 触发条件
+`--pr-diff` 且 diff > `--chunk-tokens` × 2（默认 6k tokens）时自动启用。
+`--chunk-tokens 0` 可禁用。
+
+### 与 v0.8 的区别
+v0.8 是裸切块（无全局视野）。v0.9 每块都带全局骨架，跨文件问题可见。
