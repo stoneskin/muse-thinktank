@@ -112,6 +112,11 @@ python3 -m tt.profiles_to_scores docs/model-profiles.md > scores.json
 # Blends stock 40% + code 40% + quant 20%, normalized to 0.0-1.0.
 # Regenerate after every profiles.md update.
 
+# Backup models (v0.5): fill panel gaps automatically
+python3 thinktank.py ask --models <A>,<B> --backup-models <C>,<D> --min-panel 2 "..."
+# If panel drops below --min-panel (health check or mid-run failures),
+# backups promote in order. Fail-closed only if still below minimum.
+
 # Red-team mode (v0.5): critics attack the draft, adjudicator grades findings
 python3 thinktank.py ask --red-team \
   --models <...> --judge-model <...> \
