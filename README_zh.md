@@ -145,8 +145,9 @@ python3 thinktank.py ask --red-team \
 
 ## 设计文档
 
-见 [docs/design.md](docs/design.md)（工作模式、Judge 三项权力、评审框架）与
-[docs/model-profiles.md](docs/model-profiles.md)（模型能力档案）。
+见 [docs/design.md](docs/design.md)（工作模式、Judge 三项权力、评审框架）、
+[docs/model-profiles.md](docs/model-profiles.md)（模型能力档案）与
+[docs/question-templates_zh.md](docs/question-templates_zh.md)（四件套、6 套场景模板）。
 
 ## 状态
 
