@@ -15,10 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from tt.util import log
 from tt.transport import api_key, chat, health_check, free_ids, resolve_free, fetch_pr_diff
+from tt.chunker import split_diff_by_file
+from tt.skeleton import extract_skeleton, format_skeleton
 from tt.contracts import (
     extract_json, validate_judge, normalize_judge, judge_needs_human,
-    judges_agree, disagreement_entropy,
-    JUDGE_SYSTEM, JUDGE_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
+    judges_agree, disagreement_entropy, repair_drifted,
+    JUDGE_SYSTEM, JUDGE_TEMPLATE, REPAIR_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
     CRITIC_SYSTEM, CRITIC_TEMPLATE, validate_critic,
     REDTEAM_JUDGE_SYSTEM, REDTEAM_JUDGE_TEMPLATE, validate_redteam_judge,
 )
@@ -28,6 +30,7 @@ from tt.context import (
 )
 from tt.members import (
     load_member_state, save_member_state, record_member, record_judge,
+    record_judge_fail, judge_blacklisted,
     availability, load_capability_scores, select_members,
 )
 
@@ -185,6 +188,9 @@ def main():
                          "(https://github.com/{owner}/{repo}/pull/{n}); "
                          "fetches the public diff and injects it into the "
                          "panel prompt for code review")
+    ap.add_argument("--chunk-tokens", type=int, default=3000,
+                    help="v0.8: max tokens per diff chunk in map-reduce mode. "
+                         "0 disables chunking.")
     ap.add_argument("--synth-model", default=None,
                     help="default: same as --judge-model")
     ap.add_argument("--red-team", action="store_true",
@@ -336,14 +342,27 @@ def main():
         models, hc_spent = health_check(models, key)
         spent += hc_spent
         # v0.5: promote backups if below min panel size
-        if len(models) < a.min_panel and backups:
+        # (keep trying backups until min reached or list exhausted)
+        # v0.7.1: max 3 backup rounds, avoid burning budget on long backup lists
+        MAX_BACKUP_ROUNDS = 3
+        backup_rounds = 0
+        while len(models) < a.min_panel and backups and backup_rounds < MAX_BACKUP_ROUNDS:
+            backup_rounds += 1
             need = a.min_panel - len(models)
             promoted, hc2 = health_check(backups[:need], key)
             spent += hc2
+            n_tried = min(need, len(backups))
+            tried = backups[:n_tried]
+            backups = backups[n_tried:]
+            # drop the ones that failed health check, keep trying rest
+            failed = [m for m in tried if m not in promoted]
+            if failed:
+                log("backups failed health check: %s" % ", ".join(failed))
             models.extend(promoted)
-            backups = backups[need:]
             if promoted:
                 log("backups promoted: %s" % ", ".join(promoted))
+            if not promoted and not backups:
+                break
         if not models:
             log("fail-closed: all models failed health check, refusing empty run")
             raise SystemExit(2)
@@ -361,9 +380,61 @@ def main():
     panel_system = PANEL_SYSTEM if ctx_data else None
 
     # ---- v0.4: fetch PR diff for code review ----
+    diff = None
     if a.pr_diff:
         diff = fetch_pr_diff(a.pr_diff)
         if diff:
+            # v0.8: map-reduce -- split large diff by file, review each chunk independently
+            # v0.9: four-step pipeline -- skeleton resident, details on demand
+            diff_tokens = len(diff) // 4
+            if a.chunk_tokens > 0 and diff_tokens > a.chunk_tokens * 2:
+                log("v0.9 chunked mode: diff ~%dk tokens, splitting into ~%d-token chunks"
+                    % (diff_tokens // 1000, a.chunk_tokens))
+                chunks = split_diff_by_file(diff, max_tokens=a.chunk_tokens)
+                log("v0.9: %d chunks" % len(chunks))
+                # step 1: skeleton extraction (deterministic, no model call)
+                skeletons = [extract_skeleton(c_text, fname) for fname, c_text in chunks]
+                skeleton_text = format_skeleton(skeletons)
+                log("v0.9 skeleton: %d files, %d chars" % (len(skeletons), len(skeleton_text)))
+                # step 3: local review (each chunk = global skeleton + current diff)
+                chunk_findings = []
+                for fname, chunk_text in chunks:
+                    chunk_q = ("%s\n\n=== DIFF CHUNK [%s] ===\n%s\n=== END CHUNK ===\n\n"
+                               "You are a code review expert. Above is the global skeleton (interface changes across all files),"
+                               "below is the complete diff for the current file.\n"
+                               "List the 3-5 most important issues (bugs, security, design flaws) as bullets,"
+                               "format: [file:line] issue description -- suggested fix.\n"
+                               "Pay special attention: using the global skeleton, check cross-file consistency (e.g., interface changed but callers not updated)."
+                               "Only report real issues, do not fabricate." % (skeleton_text, fname, chunk_text))
+                    if models:
+                        r = chat(models[0], [{"role": "user", "content": chunk_q}],
+                                 a.max_tokens, 0.7, a.panel_timeout, key)
+                        if not r["error"] and r["text"]:
+                            chunk_findings.append("## %s\n%s" % (fname, r["text"][:2000]))
+                            log("v0.9 chunk %s done (%d chars)" % (fname, len(r["text"])))
+                # step 4: global consistency check + aggregation
+                if chunk_findings:
+                    panel_question = (
+                        "%s\n\n=== CHUNK FINDINGS ===\n%s\n=== END ===\n\n"
+                        "You are a code review expert. Above is the global skeleton and review findings per file.\n"
+                        "Please output the final review report:\n"
+                        "1. 3-5 most important issues (sorted by severity, with file, issue, fix suggestion)\n"
+                        "2. Cross-file consistency: were all callers updated for interface changes?\n"
+                        "Requirement: only use the information above, do not fabricate."
+                        % (skeleton_text, "\n\n".join(chunk_findings)))
+                    log("v0.9: aggregating %d chunk findings via synth" % len(chunk_findings))
+                    synth_model = a.synth_model or a.judge_model
+                    synth_msgs = [
+                        {"role": "system", "content": "You are a code review expert, output the final review report."},
+                        {"role": "user", "content": panel_question},
+                    ]
+                    sr = chat(synth_model, synth_msgs, max(1200, a.max_tokens), 0.3, a.panel_timeout, key)
+                    if not sr["error"]:
+                        print(sr["text"])
+                    else:
+                        log("v0.9 synth failed: %s" % sr["error"])
+                    return
+            # non-chunked mode: original logic
             panel_question = (
                 "=== PR DIFF (fetched from %s) ===\n%s\n"
                 "=== END PR DIFF ===\n\n%s"
@@ -496,13 +567,25 @@ def main():
     # ---- phase 2: judge (v0.3a: dual-judge cross-validation) ----
     t1 = time.time()
     judges = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
+    # v0.7: blacklist warning -- judge with 2 consecutive failures not recommended
+    for jm in judges:
+        if judge_blacklisted(member_state, jm):
+            log("WARNING: judge %s is blacklisted (%d consecutive failures), "
+                "consider --judge-model2 google/gemini-3-flash-preview" %
+                (jm, member_state[jm].get("judge_fail", 0)))
     log("phase 2/3 judge: %s" % " + ".join(judges))
     # v0.4: anonymize answers for judges — model names hidden to mitigate
     # self-preference bias when a judge is also a panel member.
+    # v0.6.1: cap answer length for judge — very long answers (>9k tokens)
+    # make judges lose the "JSON only" instruction (seen 2026-10-13:
+    # both judges produced zero JSON on 19k-token input). 4000 chars
+    # is enough to judge quality.
+    JUDGE_ANSWER_CAP = 4000
     ans_block = "\n\n".join(
         "【Answer %d】%s\n%s" % (i,
                                 " (truncated)" if x["truncated"] else "",
-                                x["text"])
+                                x["text"][:JUDGE_ANSWER_CAP] +
+                                ("…[judge-truncated]" if len(x["text"]) > JUDGE_ANSWER_CAP else ""))
         for i, x in enumerate(ok_answers))
     # v0.4: warn when a judge overlaps with panel membership
     # (only reachable with --allow-judge-overlap)
@@ -513,15 +596,54 @@ def main():
                 % jm)
 
     def run_judge(jm):
-        jr = chat(jm,
-                  [{"role": "system", "content": JUDGE_SYSTEM},
-                   {"role": "user",
-                    "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
-                                                     answers=ans_block)}],
+        msgs = [{"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user",
+                 "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
+                                                  answers=ans_block)}]
+        jr = chat(jm, msgs,
                   max(900, a.max_tokens), 0.3, a.panel_timeout, key)
         raw = extract_json(jr["text"]) if not jr["error"] else None
         j = normalize_judge(raw, len(ok_answers)) \
             if raw is not None else None
+        # v0.6: repair-retry once on contract violation. Feed the specific
+        # schema errors back; the model fixes its own format. Still
+        # fail-closed: one retry max, then escalate as before.
+        if j is None and not jr["error"] and raw is not None:
+            _, errs = validate_judge(raw, len(ok_answers), collect_all=True)
+            log("judge %s contract violation, repair-retry once (%d errors)"
+                % (jm, len(errs)))
+            repair_msgs = msgs + [
+                {"role": "assistant", "content": jr["text"][:2000]},
+                {"role": "user", "content": REPAIR_TEMPLATE.format(
+                    errors="\n".join("- " + e for e in errs[:8]))},
+            ]
+            jr2 = chat(jm, repair_msgs,
+                       max(900, a.max_tokens), 0.3, a.panel_timeout, key)
+            retry_cost = jr["cost"] + jr2["cost"]
+            # v0.4: runtime budget circuit breaker (retry cost counts)
+            if runtime_budget:
+                try:
+                    runtime_budget.charge(jr2["cost"])
+                except BudgetExceeded as be:
+                    log("BUDGET EXCEEDED: %s -- aborting" % be)
+                    raise SystemExit(3)
+            raw2 = extract_json(jr2["text"]) if not jr2["error"] else None
+            j2 = normalize_judge(raw2, len(ok_answers)) \
+                if raw2 is not None else None
+            if j2 is not None:
+                # v0.6.1: semantic drift detection -- repair may only fix format, not judgments
+                if repair_drifted(raw, j2):
+                    log("judge %s repair changed semantics (winner/verdict drift), "
+                        "discarding repair, escalating" % jm)
+                    jr["cost"] = retry_cost
+                else:
+                    log("judge %s repair-retry succeeded" % jm)
+                    jr2["cost"] = retry_cost
+                    jr = jr2
+                    j = j2
+            else:
+                jr["cost"] = retry_cost
+                log("judge %s repair-retry failed, escalating" % jm)
         # v0.3a: track judge bias stats
         if j is not None and a.member_state:
             n_acc = sum(1 for d in j["decisions"]
@@ -565,6 +687,17 @@ def main():
             judge_results[jm] = (jr, j)
             if j is None:
                 log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
+                # v0.7: record judge failure, 2 consecutive failures -> blacklist
+                record_judge_fail(member_state, jm)
+                # v0.6.1: save failed raw output for diagnosis (under /tmp, cleaned after 7 days)
+                try:
+                    import time as _t
+                    _p = "/tmp/thinktank-judge-fail-%s-%d.txt" % (
+                        jm.replace("/", "_").replace(":", "_"), int(_t.time()))
+                    open(_p, "w").write(jr.get("text", "")[:4000])
+                    log("judge %s raw output saved to %s" % (jm, _p))
+                except Exception:
+                    pass
             else:
                 log("judge %s: winner=%s confidence=%s"
                     % (jm, j.get("winner"), j.get("confidence")))

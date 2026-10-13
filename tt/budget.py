@@ -1,5 +1,7 @@
 """v0.4 module: tt/budget.py."""
 
+import json
+import os
 import threading
 from .util import log
 
@@ -79,10 +81,11 @@ def worst_case_cost(models, judge_models, synth_model, question, max_tokens,
         pi, po = per1m[m]
         total += q_tok / 1e6 * pi + max_tokens / 1e6 * po
     # judge prompt carries all answers at worst-case length
+    # v0.6: x2 for repair-retry (one retry max per judge)
     judge_prompt = (len(models) * max_tokens * 2 + len(question)) / 4.0
     for jm in judge_models:
         pj_i, pj_o = per1m[jm]
-        total += judge_prompt / 1e6 * pj_i + judge_max / 1e6 * pj_o
+        total += 2 * (judge_prompt / 1e6 * pj_i + judge_max / 1e6 * pj_o)
     ps_i, ps_o = per1m[synth_model]
     total += judge_prompt / 1e6 * ps_i + synth_max / 1e6 * ps_o
     return total, None

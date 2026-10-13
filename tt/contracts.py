@@ -24,38 +24,89 @@ VERDICTS = ("accept", "reject", "escalate")
 SEVERITIES = ("critical", "major", "minor", "nitpick")
 
 
-def validate_judge(j, n):
-    """Strict judge-contract check. Returns (ok, reason)."""
+def validate_judge(j, n, collect_all=False):
+    """Strict judge-contract check. Returns (ok, reason) or (ok, [reasons])."""
+    errs = []
     if not isinstance(j, dict):
-        return False, "judge output is not a JSON object"
-    w = j.get("winner")
-    if not (w is None or (isinstance(w, int) and not isinstance(w, bool)
-                           and 0 <= w < n)):
-        return False, "invalid winner (must be index 0-%d or null)" % (n - 1)
-    ds = j.get("decisions")
-    if not isinstance(ds, list) or len(ds) != n:
-        return False, "decisions must cover all %d answers" % n
-    seen = set()
-    for d in ds:
-        if not isinstance(d, dict):
-            return False, "decision is not an object"
-        i = d.get("id")
-        if not isinstance(i, int) or isinstance(i, bool) \
-                or not (0 <= i < n) or i in seen:
-            return False, "invalid decision id"
-        seen.add(i)
-        if d.get("verdict") not in VERDICTS:
-            return False, "invalid verdict (must be accept|reject|escalate)"
-        if d.get("severity") not in SEVERITIES:
-            return False, "invalid severity"
-        if not isinstance(d.get("evidence"), str) or not d["evidence"].strip():
-            return False, "evidence must not be empty"
-    if j.get("confidence") not in ("high", "medium", "low"):
-        return False, "invalid confidence"
-    rej = {d["id"] for d in ds if d["verdict"] == "reject"}
-    if isinstance(w, int) and w in rej:
-        return False, "winner cannot be a rejected answer"
-    return True, ""
+        errs.append("judge output is not a JSON object")
+    else:
+        w = j.get("winner")
+        if not (w is None or (isinstance(w, int) and not isinstance(w, bool)
+                               and 0 <= w < n)):
+            errs.append("invalid winner (must be index 0-%d or null)" % (n - 1))
+        ds = j.get("decisions")
+        if not isinstance(ds, list) or len(ds) != n:
+            errs.append("decisions must cover all %d answers" % n)
+        else:
+            seen = set()
+            for d in ds:
+                if not isinstance(d, dict):
+                    errs.append("decision is not an object")
+                    continue
+                i = d.get("id")
+                if not isinstance(i, int) or isinstance(i, bool) \
+                        or not (0 <= i < n) or i in seen:
+                    errs.append("invalid decision id (must be unique int 0-%d)" % (n - 1))
+                else:
+                    seen.add(i)
+                if d.get("verdict") not in VERDICTS:
+                    errs.append("invalid verdict (must be accept|reject|escalate)")
+                if d.get("severity") not in SEVERITIES:
+                    errs.append("invalid severity (must be critical|major|minor|nitpick)")
+                if not isinstance(d.get("evidence"), str) or not d["evidence"].strip():
+                    errs.append("evidence must not be empty")
+        if j.get("confidence") not in ("high", "medium", "low"):
+            errs.append("invalid confidence (must be high|medium|low)")
+        rej = set()
+        if isinstance(j.get("decisions"), list):
+            rej = {d["id"] for d in j["decisions"]
+                   if isinstance(d, dict) and d.get("verdict") == "reject"
+                   and isinstance(d.get("id"), int)}
+        if isinstance(w, int) and w in rej:
+            errs.append("winner cannot be a rejected answer")
+    ok = len(errs) == 0
+    if collect_all:
+        return ok, errs
+    return ok, (errs[0] if errs else "")
+
+
+def _lenient_fix(j, n):
+    """v0.6: cosmetic auto-repairs that don't change meaning.
+
+    - enum case-insensitive (Accept -> accept)
+    - numeric strings -> int ("1" -> 1)
+    - missing confidence -> medium
+    Never maps synonyms (approved -> accept) — that's semantic, leave it
+    for the repair-retry path.
+    Returns fixed copy, or None if input isn't a dict.
+    """
+    if not isinstance(j, dict):
+        return None
+    import copy
+    f = copy.deepcopy(j)
+    w = f.get("winner")
+    if isinstance(w, str) and w.strip().lstrip("-").isdigit():
+        f["winner"] = int(w.strip())
+    c = f.get("confidence")
+    if isinstance(c, str) and c.lower() in ("high", "medium", "low"):
+        f["confidence"] = c.lower()
+    elif c is None:
+        f["confidence"] = "medium"
+    ds = f.get("decisions")
+    if isinstance(ds, list):
+        for d in ds:
+            if not isinstance(d, dict):
+                continue
+            i = d.get("id")
+            if isinstance(i, str) and i.strip().lstrip("-").isdigit():
+                d["id"] = int(i.strip())
+            v = d.get("verdict")
+            if isinstance(v, str) and v.lower() in VERDICTS:
+                d["verdict"] = v.lower()
+            s = d.get("severity")
+            if isinstance(s, str) and s.lower() in SEVERITIES:
+                d["severity"] = s.lower()
+    return f
 
 
 def normalize_judge(j, n):
@@ -66,6 +117,14 @@ def normalize_judge(j, n):
         ok, _ = validate_judge(j, n)
         if ok:
             return j
+        # v0.6: cosmetic leniency before giving up — fix case/number
+        # formatting without changing meaning; log when applied.
+        fixed = _lenient_fix(j, n)
+        if fixed is not None:
+            ok2, _ = validate_judge(fixed, n)
+            if ok2:
+                log("judge output auto-repaired (cosmetic: case/number format)")
+                return fixed
         rej = j.get("rejected")
         if isinstance(rej, list):
             rej_ids = {i for i in rej
@@ -130,6 +189,68 @@ def disagreement_entropy(judge, n):
 
 
 JUDGE_SYSTEM = "You are a neutral judge. Output JSON only, no other text."
+
+REPAIR_TEMPLATE = """Your previous judge output failed schema validation with these errors:
+{errors}
+
+Resend ONLY the corrected JSON, no other text. Keep your judgments (winner, verdicts, evidence) exactly the same — fix only the format to match the schema."""
+
+
+def _ci_get(d, key):
+    """大小写不敏感取 dict 值（repair_drifted 需比对未归一化的 raw）。"""
+    if not isinstance(d, dict):
+        return None
+    if key in d:
+        return d[key]
+    lk = key.lower()
+    for k, v in d.items():
+        if isinstance(k, str) and k.lower() == lk:
+            return v
+    return None
+
+
+def _semantic_core(j):
+    """提取判断的语义核心 (winner, {id: verdict})，用于检测 repair 语义漂移."""
+    if not isinstance(j, dict):
+        return None
+    w = _ci_get(j, "winner")
+    if isinstance(w, str) and w.strip().lstrip("-").isdigit():
+        w = int(w.strip())
+    if not (w is None or (isinstance(w, int) and not isinstance(w, bool))):
+        w = "?"
+    verdicts = {}
+    ds = _ci_get(j, "decisions")
+    if isinstance(ds, list):
+        for d in ds:
+            if not isinstance(d, dict):
+                continue
+            i = _ci_get(d, "id")
+            if isinstance(i, str) and i.strip().lstrip("-").isdigit():
+                i = int(i.strip())
+            v = _ci_get(d, "verdict")
+            if isinstance(v, str):
+                v = v.lower().strip()
+            if isinstance(i, int) and not isinstance(i, bool):
+                verdicts[i] = v
+    return (w, verdicts)
+
+
+def repair_drifted(original_raw, repaired):
+    """检查 repair 是否改变了语义（winner/verdicts）。True=漂移，不可信."""
+    c1 = _semantic_core(original_raw)
+    c2 = _semantic_core(repaired)
+    if c1 is None or c2 is None:
+        return True  # 无法比较，保守起见视为漂移
+    w1, v1 = c1
+    w2, v2 = c2
+    # winner：原输出有明确 winner 且被改了 → 漂移
+    if w1 not in (None, "?") and w2 not in (None, "?") and w1 != w2:
+        return True
+    # verdicts：原输出有的 verdict 被改了 → 漂移
+    for i, v in v1.items():
+        if i in v2 and v2[i] not in (None, "?") and v not in (None, "?") and v != v2[i]:
+            return True
+    return False
 
 JUDGE_TEMPLATE = """{n} AI models answered the same question. Judge them and output JSON only, strictly following the schema:
 
