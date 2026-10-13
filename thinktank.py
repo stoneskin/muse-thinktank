@@ -28,6 +28,7 @@ from tt.context import (
 )
 from tt.members import (
     load_member_state, save_member_state, record_member, record_judge,
+    record_judge_fail, judge_blacklisted,
     availability, load_capability_scores, select_members,
 )
 
@@ -505,6 +506,12 @@ def main():
     # ---- phase 2: judge (v0.3a: dual-judge cross-validation) ----
     t1 = time.time()
     judges = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
+    # v0.7: 黑名单警告 — 连续失败 2 次的 judge 建议别用
+    for jm in judges:
+        if judge_blacklisted(member_state, jm):
+            log("WARNING: judge %s is blacklisted (%d consecutive failures), "
+                "consider --judge-model2 google/gemini-3-flash-preview" %
+                (jm, member_state[jm].get("judge_fail", 0)))
     log("phase 2/3 judge: %s" % " + ".join(judges))
     # v0.4: anonymize answers for judges — model names hidden to mitigate
     # self-preference bias when a judge is also a panel member.
@@ -619,6 +626,8 @@ def main():
             judge_results[jm] = (jr, j)
             if j is None:
                 log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
+                # v0.7: 记 judge 失败，连续 2 次进黑名单
+                record_judge_fail(member_state, jm)
                 # v0.6.1: 保存失败的原始输出用于诊断（/tmp 下，7 天清理）
                 try:
                     import time as _t

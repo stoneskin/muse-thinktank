@@ -31,6 +31,8 @@
 
 **v0.6.1（2026-10-13）**：judge 输入截断——panel 答案太长（9k+ tokens）时 judge 会丢"JSON only"指令（sonnet-5.5 和 minimax 双双零 JSON 输出）。喂给 judge 的每答案截断到 4000 字符。另：repair 加语义漂移检测（winner/verdict 被改则弃用）。panel 侧加软约束：PANEL_SYSTEM 要求 300-600 词（源头控制，judge 截断为兜底）。
 
+**v0.7（2026-10-13）**：judge 黑名单——`tt/members.py` 跟踪 `judge_fail`（contract violation/空输出），连续 2 次失败进黑名单，下次指定时 WARNING 提示换 judge。成功则清零。minimax-m3 已三次掉链，触发黑名单。
+
 ## 3. 运行规则
 
 ### 3.1 升级规则：免费 → 付费（Stone 2026-10-11 立）
