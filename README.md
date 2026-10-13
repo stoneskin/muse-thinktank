@@ -145,8 +145,9 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Design Docs
 
-[docs/design.md](docs/design.md) (work modes, judge powers, review framework) and
-[docs/model-profiles.md](docs/model-profiles.md) (model capability profiles).
+[docs/design.md](docs/design.md) (work modes, judge powers, review framework),
+[docs/model-profiles.md](docs/model-profiles.md) (model capability profiles), and
+[docs/question-templates.md](docs/question-templates.md) (four-part brief, 6 scenario templates).
 
 ## Status
 
