@@ -17,7 +17,7 @@ from tt.util import log
 from tt.transport import api_key, chat, health_check, free_ids, resolve_free, fetch_pr_diff
 from tt.contracts import (
     extract_json, validate_judge, normalize_judge, judge_needs_human,
-    judges_agree, disagreement_entropy,
+    judges_agree, disagreement_entropy, repair_drifted,
     JUDGE_SYSTEM, JUDGE_TEMPLATE, REPAIR_TEMPLATE, SYNTH_SYSTEM, SYNTH_TEMPLATE,
     CRITIC_SYSTEM, CRITIC_TEMPLATE, validate_critic,
     REDTEAM_JUDGE_SYSTEM, REDTEAM_JUDGE_TEMPLATE, validate_redteam_judge,
@@ -508,10 +508,16 @@ def main():
     log("phase 2/3 judge: %s" % " + ".join(judges))
     # v0.4: anonymize answers for judges — model names hidden to mitigate
     # self-preference bias when a judge is also a panel member.
+    # v0.6.1: cap answer length for judge — very long answers (>9k tokens)
+    # make judges lose the "JSON only" instruction (seen 2026-10-13:
+    # both judges produced zero JSON on 19k-token input). 4000 chars
+    # is enough to judge quality.
+    JUDGE_ANSWER_CAP = 4000
     ans_block = "\n\n".join(
         "【Answer %d】%s\n%s" % (i,
                                 " (truncated)" if x["truncated"] else "",
-                                x["text"])
+                                x["text"][:JUDGE_ANSWER_CAP] +
+                                ("…[judge-truncated]" if len(x["text"]) > JUDGE_ANSWER_CAP else ""))
         for i, x in enumerate(ok_answers))
     # v0.4: warn when a judge overlaps with panel membership
     # (only reachable with --allow-judge-overlap)
@@ -557,10 +563,16 @@ def main():
             j2 = normalize_judge(raw2, len(ok_answers)) \
                 if raw2 is not None else None
             if j2 is not None:
-                log("judge %s repair-retry succeeded" % jm)
-                jr2["cost"] = retry_cost
-                jr = jr2
-                j = j2
+                # v0.6.1: 语义漂移检测 — repair 只许改格式，不许改判断
+                if repair_drifted(raw, j2):
+                    log("judge %s repair changed semantics (winner/verdict drift), "
+                        "discarding repair, escalating" % jm)
+                    jr["cost"] = retry_cost
+                else:
+                    log("judge %s repair-retry succeeded" % jm)
+                    jr2["cost"] = retry_cost
+                    jr = jr2
+                    j = j2
             else:
                 jr["cost"] = retry_cost
                 log("judge %s repair-retry failed, escalating" % jm)
@@ -607,6 +619,15 @@ def main():
             judge_results[jm] = (jr, j)
             if j is None:
                 log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
+                # v0.6.1: 保存失败的原始输出用于诊断（/tmp 下，7 天清理）
+                try:
+                    import time as _t
+                    _p = "/tmp/thinktank-judge-fail-%s-%d.txt" % (
+                        jm.replace("/", "_").replace(":", "_"), int(_t.time()))
+                    open(_p, "w").write(jr.get("text", "")[:4000])
+                    log("judge %s raw output saved to %s" % (jm, _p))
+                except Exception:
+                    pass
             else:
                 log("judge %s: winner=%s confidence=%s"
                     % (jm, j.get("winner"), j.get("confidence")))

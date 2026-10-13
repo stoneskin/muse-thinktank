@@ -195,6 +195,50 @@ REPAIR_TEMPLATE = """Your previous judge output failed schema validation with th
 
 Resend ONLY the corrected JSON, no other text. Keep your judgments (winner, verdicts, evidence) exactly the same — fix only the format to match the schema."""
 
+
+def _semantic_core(j):
+    """提取判断的语义核心 (winner, {id: verdict})，用于检测 repair 语义漂移."""
+    if not isinstance(j, dict):
+        return None
+    w = j.get("winner")
+    if isinstance(w, str) and w.strip().lstrip("-").isdigit():
+        w = int(w.strip())
+    if not (w is None or (isinstance(w, int) and not isinstance(w, bool))):
+        w = "?"
+    verdicts = {}
+    ds = j.get("decisions")
+    if isinstance(ds, list):
+        for d in ds:
+            if not isinstance(d, dict):
+                continue
+            i = d.get("id")
+            if isinstance(i, str) and i.strip().lstrip("-").isdigit():
+                i = int(i.strip())
+            v = d.get("verdict")
+            if isinstance(v, str):
+                v = v.lower()
+            if isinstance(i, int) and not isinstance(i, bool):
+                verdicts[i] = v
+    return (w, verdicts)
+
+
+def repair_drifted(original_raw, repaired):
+    """检查 repair 是否改变了语义（winner/verdicts）。True=漂移，不可信."""
+    c1 = _semantic_core(original_raw)
+    c2 = _semantic_core(repaired)
+    if c1 is None or c2 is None:
+        return True  # 无法比较，保守起见视为漂移
+    w1, v1 = c1
+    w2, v2 = c2
+    # winner：原输出有明确 winner 且被改了 → 漂移
+    if w1 not in (None, "?") and w2 not in (None, "?") and w1 != w2:
+        return True
+    # verdicts：原输出有的 verdict 被改了 → 漂移
+    for i, v in v1.items():
+        if i in v2 and v2[i] not in (None, "?") and v not in (None, "?") and v != v2[i]:
+            return True
+    return False
+
 JUDGE_TEMPLATE = """{n} AI models answered the same question. Judge them and output JSON only, strictly following the schema:
 
 {{"winner": 0,

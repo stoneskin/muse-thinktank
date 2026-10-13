@@ -34,7 +34,11 @@ DEFAULT_BLACKLIST = {
 
 TRIGGER_RE = re.compile(r"运行输出|运行结果|实际数字|脚本输出|输出[:：]|```output|output of", re.I)
 CODE_FENCE_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
-NUMBER_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%?")
+NUMBER_RE = re.compile(r"(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*%?")
+# 输出块的语言标记（空=无标记，常见于粘贴的运行输出）
+OUTPUT_LANGS = {"", "output", "text", "result", "stdout", "console", "terminal"}
+# 明确不是输出的块（跳过，继续往后找）
+SKIP_LANGS = {"bash", "shell", "sh", "zsh", "powershell", "cmd", "dockerfile"}
 TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 FLOAT_TOL = 1e-3  # 数字比对容差（覆盖 %.4f 等格式化舍入）
 
@@ -71,10 +75,20 @@ def extract_pairs(text):
             continue
         code = m.group(2)
         claimed = None
-        # 约定：紧跟的下一个 fence 若为非 python，即为其声明输出
-        if idx + 1 < len(fences) and fences[idx + 1].group(1).lower() not in ("python", "py"):
-            claimed = fences[idx + 1].group(2)
-        else:
+        # 约定：紧跟的下一个 fence 若为输出类标记，即为其声明输出；
+        # 中间的 bash/shell 类块跳过；遇到 python 块或未知块则停止（配对失败）。
+        j = idx + 1
+        while j < len(fences):
+            lang_j = fences[j].group(1).lower()
+            if lang_j in OUTPUT_LANGS:
+                claimed = fences[j].group(2)
+                break
+            elif lang_j in SKIP_LANGS:
+                j += 1
+                continue
+            else:
+                break
+        if claimed is None:
             # fallback：在代码块之后找 markdown 表格
             end = fences[idx + 1].start() if idx + 1 < len(fences) else len(text)
             claimed = _extract_table_text(text[m.end():end])
@@ -86,7 +100,7 @@ def extract_numbers(text):
     """提取数字，% 自动归一化为小数. 返回 [float]."""
     out = []
     for m in NUMBER_RE.finditer(text or ""):
-        v = float(m.group(1))
+        v = float(m.group(1).replace(",", ""))
         if m.group(0).strip().endswith("%"):
             v /= 100.0
         out.append(v)
@@ -107,13 +121,19 @@ def numbers_match(claimed, actual, tol=FLOAT_TOL):
 
 
 def sandbox_run(code, timeout=60):
-    """隔离进程实跑。返回 (ok, stdout, stderr, env_info)."""
+    """隔离进程实跑。返回 (ok, stdout, stderr, env_info).
+
+    # WARNING: 这不是真沙箱！只是 subprocess 裸跑，无 seccomp/container/
+    # network/filesystem 隔离。仅用于可信来源的代码（如评测集标准答案）。
+    # 对不可信模型输出，必须先人工审查或换真沙箱。Phase 2 前必须解决。
+    """
     import numpy, pandas, scipy  # noqa: F401  (记录版本用)
     env_info = {
         "python": sys.version.split()[0],
         "numpy": numpy.__version__,
         "pandas": pandas.__version__,
         "scipy": scipy.__version__,
+        "sandboxed": False,  # 诚实标记：无隔离
     }
     try:
         r = subprocess.run(
@@ -127,8 +147,13 @@ def sandbox_run(code, timeout=60):
         return False, "", str(e)[:200], env_info
 
 
-def validate(text, model_id, blacklist=None, force=False, timeout=60):
-    """Phase 1 主流程. 返回 dict(verdict, reason, detail)."""
+def validate(text, model_id, blacklist=None, force=False, timeout=60,
+             allow_unsafe=False):
+    """Phase 1 主流程. 返回 dict(verdict, reason, detail).
+
+    allow_unsafe: 必须显式传 True 才允许实跑。sandbox_run 无真隔离，
+    对不可信输入实跑前调用方必须确认风险。
+    """
     if blacklist is None:
         blacklist = DEFAULT_BLACKLIST
     if not should_trigger(text):
@@ -153,6 +178,10 @@ def validate(text, model_id, blacklist=None, force=False, timeout=60):
     if not need_run:
         return {"verdict": "format-ok",
                 "reason": "格式合规（%d 对配对），Phase 1 不实跑" % len(pairs),
+                "pairs": len(pairs)}
+    if not allow_unsafe:
+        return {"verdict": "needs-review",
+                "reason": "需沙箱实跑但 allow_unsafe=False（sandbox_run 无真隔离），转人工",
                 "pairs": len(pairs)}
 
     # 定向抽检：沙箱实跑
@@ -191,12 +220,15 @@ def main():
     ap.add_argument("--model", required=True, help="模型 id（查黑名单用）")
     ap.add_argument("--force", action="store_true", help="强制实跑（无视黑名单）")
     ap.add_argument("--blacklist", default="", help="逗号分隔的额外黑名单")
+    ap.add_argument("--allow-unsafe", action="store_true",
+                    help="确认接受 sandbox_run 无真隔离的风险，允许实跑")
     a = ap.parse_args()
     bl = set(DEFAULT_BLACKLIST)
     if a.blacklist:
         bl |= {m.strip() for m in a.blacklist.split(",") if m.strip()}
     text = open(a.file, encoding="utf-8").read()
-    print(json.dumps(validate(text, a.model, blacklist=bl, force=a.force),
+    print(json.dumps(validate(text, a.model, blacklist=bl, force=a.force,
+                              allow_unsafe=a.allow_unsafe),
                      ensure_ascii=False, indent=2))
 
 

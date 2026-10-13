@@ -1,13 +1,13 @@
 # AI 智囊团调度台（muse-thinktank）— 设计文档 v0.1
 
 - 状态：**开工**（2026-10-11；前身是同日凌晨的 IDEA 记录）
-- 一句话：不做手机 App，做一个**Muse能用的软件**——Stone 在聊天里提问，Muse用他的 OpenRouter key 并行问 N 个模型（可多轮辩论），judge + synth 后把结论交回来。Muse帮他管理、总结这些 AI 智囊团。
+- 一句话：不做手机 App，做一个**小沐能用的软件**——Stone 在聊天里提问，小沐用他的 OpenRouter key 并行问 N 个模型（可多轮辩论），judge + synth 后把结论交回来。小沐帮他管理、总结这些 AI 智囊团。
 
 ## 1. 背景：为什么做、为什么可行
 
-1. **客户端已经存在**：就是现在跟Muse聊天的界面（App / WhatsApp）。手机 App 最难的 UI、推送、上架全都不需要——手机上直接就能测。
-2. **调度者已经存在**：Muse有 subagent 并行、shell、定时任务。fan-out / fan-in 是现成的能力。
-3. **缺的只是薄薄一层**：`thinktank.py`（fan-out → 可选对抗轮 → judge → synth → 成本小结）+ skill（触发词、路由规则、预算）+ OpenRouter key（已配好，通过安全方式配置，不进 git、不打印）。
+1. **客户端已经存在**：就是现在跟小沐聊天的界面（App / WhatsApp）。手机 App 最难的 UI、推送、上架全都不需要——手机上直接就能测。
+2. **调度者已经存在**：小沐有 subagent 并行、shell、定时任务。fan-out / fan-in 是现成的能力。
+3. **缺的只是薄薄一层**：`thinktank.py`（fan-out → 可选对抗轮 → judge → synth → 成本小结）+ skill（触发词、路由规则、预算）+ OpenRouter key（已配好，走 Secure Vault，不进 git、不打印）。
 
 ## 2. 工作模式
 
@@ -19,7 +19,7 @@
 ### 2.2 触发规则（Stone 2026-10-11 补充）
 
 - Stone 说"上智囊团/议一议"就用 think-tank 模式。
-- Muse觉得某问题值得多模型会诊时，**主动问一句**再跑——不擅自跑（一次几分钟 + 注意力成本）。
+- 小沐觉得某问题值得多模型会诊时，**主动问一句**再跑——不擅自跑（一次几分钟 + 注意力成本）。
 
 ### 2.3 Judge 的三项权力（Stone 2026-10-11 补充）
 
@@ -27,16 +27,16 @@
 2. **噪音过滤**：critics 的挑刺按严重性分级（critical/major/minor/nitpick），nitpick 在终审前过滤，只把真问题摆出来。
 3. **人终审**：重要事项 judge 只做分析和噪音过滤，把干净候选 + 分歧点摆出来，**Stone 亲自裁**（对应 opencode-fuse §6.3 的 `--show-all` 用户选择模式）。
 
-**v0.6（2026-10-13）**：judge 容错两层——① 宽容层：枚举大小写不敏感、数字字符串转 int、confidence 缺失默认 medium（不碰语义）；② repair-retry：contract violation 后把具体报错喂回去让模型自修格式，最多 1 次，还不行就 escalate。fail-closed 还在，只是从"一次不过就判死"变成"给一次改错机会"。budget 按 2x judge 成本估算。
+**v0.6（2026-10-13，Stone 批准）**：judge 容错两层——① 宽容层：枚举大小写不敏感、数字字符串转 int、confidence 缺失默认 medium（不碰语义）；② repair-retry：contract violation 后把具体报错喂回去让模型自修格式，最多 1 次，还不行就 escalate。fail-closed 还在，只是从"一次不过就判死"变成"给一次改错机会"。budget 按 2x judge 成本估算。
 
-**v0.6.1（2026-10-13）**：judge 输入截断——panel 答案太长（9k+ tokens）时 judge 会丢"JSON only"指令。喂给 judge 的每答案截断到 4000 字符；panel 侧 PANEL_SYSTEM 要求 300-600 词（源头控制）。另：repair 加语义漂移检测（winner/verdict 被改则弃用）。
+**v0.6.1（2026-10-13）**：judge 输入截断——panel 答案太长（9k+ tokens）时 judge 会丢"JSON only"指令（sonnet-5.5 和 minimax 双双零 JSON 输出）。喂给 judge 的每答案截断到 4000 字符。另：repair 加语义漂移检测（winner/verdict 被改则弃用）。panel 侧加软约束：PANEL_SYSTEM 要求 300-600 词（源头控制，judge 截断为兜底）。
 
 ## 3. 运行规则
 
 ### 3.1 升级规则：免费 → 付费（Stone 2026-10-11 立）
 
-- 免费模型结果不满意（空返回、低质量、分歧无解）→ Muse**主动提醒**并**跟他确认**是否上更好更可靠的付费模型，**绝不自动转付费**。
-- 建议时带上预估费用和当前余额（建议时带上预估费用；余额不多时优先单次 premium 调用而非整 panel 付费）。
+- 免费模型结果不满意（空返回、低质量、分歧无解）→ 小沐**主动提醒**并**跟他确认**是否上更好更可靠的付费模型，**绝不自动转付费**。
+- 建议时带上预估费用和当前余额（2026-10-11：总额 $31，已用 $22.72，剩约 $8.3——余额不多，优先单次 premium 调用而非整 panel 付费）。
 - 语义与 opencode-fuse 的 `/better` 升档一致：免费搞不定 → 问一句 → 花钱买更好的。
 
 ### 3.2 进展汇报（Stone 2026-10-11 立）
@@ -48,7 +48,7 @@
 ### 3.3 token 策略（Stone 2026-10-11 补充）
 
 - 智囊团 panel 默认免费模型；免费池每天 08:00（美东）自动扫描保鲜（cron: `openrouter-free-models-daily-scan`），名单有实质变化才打扰。
-- **Muse可用免费模型省 token**：机械性/草稿性工作（摘要、提取、格式化、初稿、批量分类）Muse可以用免费模型先干；涉及判断、决策、终审和直接给 Stone 的结论，仍由Muse自己来。免费模型的输出Muse负责验——省 token 不省质量责任。
+- **小沐可用免费模型省 token**：机械性/草稿性工作（摘要、提取、格式化、初稿、批量分类）小沐可以用免费模型先干；涉及判断、决策、终审和直接给 Stone 的结论，仍由小沐自己来。免费模型的输出小沐负责验——省 token 不省质量责任。
 - `:free` 后缀 fail-closed：缺失后缀视为失败，绝不静默走付费版（FreeToken-Bots 的教训）；池空就报空池。
 
 ## 4. 模型能力档案（Stone 2026-10-11 要求）
@@ -63,12 +63,12 @@
 2. **成本按轮数放大**：每加一轮辩论，token 翻倍。预算熔断必须有。
 3. **模型同质化**：都问同一类模型，盲点是重叠的。异构阵容 + 对抗角色（D10 Red Team）才有意义；否则不如单问一个最好的。
 4. **免费模型不稳定**：429、空返回、无公告下架（如 space-bunny-alpha，2026-10-11 前已从 OpenRouter 下架）都是常态——免费池雷达和 fail-closed 是刚需，不是点缀。
-5. **别过度建设**：80% 是Muse本来就能做的事，"软件"只是把多轮辩论和成本账做规整。先别写大系统。
+5. **别过度建设**：80% 是小沐本来就能做的事，"软件"只是把多轮辩论和成本账做规整。先别写大系统。
 
 ## 6. 与现有项目的关系
 
-- opencode-fuse = opencode 内嵌版 panel；这个 = Muse托管版。judge/synth 设计互通，dogfood。
-- Gemini 调研的 Multi / Suprmind = "别人替你管智囊团"；这个思路 = "让Muse替你管"——少了 App 那层，多了一个知根知底的人。
+- opencode-fuse = opencode 内嵌版 panel；这个 = 小沐托管版。judge/synth 设计互通，dogfood。
+- Gemini 调研的 Multi / Suprmind = "别人替你管智囊团"；这个思路 = "让小沐替你管"——少了 App 那层，多了一个知根知底的人。
 
 ## 7. 里程碑
 
@@ -130,35 +130,16 @@
 三轮统计：8 个模型次调用，4 次成功交卷，4 次 429/空返回——免费模型可用率约 50%，这本身就是"健康检测"建议的最佳论据。
 结论：三轮共识 top3 已稳定（①触发零轮次 ②Judge 结构化契约 ③最坏路径封顶价+健康检测），可拍板开工。
 
-## 10d. 第四轮自评审（2026-10-11，5 家：v4-pro、llama-4-maverick、minimax-m3 付费 + ultra-550b、super-120b 免费，评审"智囊团系统本身"）
-
-### P0（5/5 共识，必须改）
-
-1. **双 judge 交叉验证**：单 judge 是最大单点故障（bias、幻觉、宕机全链崩）。改法：两个异构 judge 独立打分，verdict 一致才自动通过；分歧直接升级人终审。同时记录各 judge 的接受/拒绝率，定期检测偏倚漂移。
-2. **动态成员选择**：静态 model-profiles 分数不够——模型今天 429 率 80%，昨天 15 分也白搭。改法：调度分 = 能力分 × 滑动窗口可用性分（近 20 次成功率 × 平均延迟倒数）；< 0.6 直接剔除本轮；连续 3 次故障摘出候选池，恢复后自动回池。
-3. **辩论收敛条件**：不能靠"最多 2 轮"硬截。改法：judge 输出分歧集合 + 严重度加权；分歧熵连续两轮不降、或连续两轮无新 critical，即收敛；critic 必须输出"具体证据 + 可执行修补"才算有效一击。
-
-### P1（4/5 共识，强烈建议）
-
-4. **分层 panel**：现在全 panel 一起跑，80% token 花在无分歧的共识上。改法：Stage 1 用免费模型跑全量，judge 只提取分歧点；Stage 2 仅把分歧点 + 关键上下文发给 1 个付费模型终审。预计成本降 60%+。
-5. **synth 引用溯源**：synth 每句话标注来源 `[来自 A, C]`，共识还是孤证一眼可见；judge 的 evidence 必须能在原答案中找到原文子串，代码层硬校验，缺失则降级。
-6. **血统多样性硬约束**：panel 强制 ≥2 个不同厂商，防止同家族共识性幻觉。
-
-### P2（采纳两条，其余进 backlog）
-
-- **采纳：cascade 启动**（minimax）：先派 1 个最便宜可靠的模型出初稿，自评置信度 + 结构化检查过关即直接返回；低置信/分歧才扩 panel。70% 的问题不需要 3 个模型。
-- **采纳：配置化**（super）：model-profiles、judge schema、价格表全抽成版本化 YAML/JSON，调度器启动时动态加载；加模型/加评审维度不改代码。
-- **Backlog**：ROI 熔断（每轮算 Δ质量/Δ费用，低于阈值自动停）、问题 embedding 缓存（相似度 >0.92 复用历史结果）、事件流架构（panel→judge→synth 改流式增量）。
-
 ## 11. v0.2 实现（Stone 2026-10-11 拍板，当天实现+验证）
 
 三件全部落地（`thinktank.py`，纯标准库）：
 
-1. **触发零轮次**：`--estimate` 不调 API 直接打印运行预估（调用次数、completion token 上限、费用上限、耗时），Muse贴出预估、Stone 回"去/改"即确认。聊天侧规则同步更新：不再是"先问一句"，而是"预估附首条"。
+1. **触发零轮次**：`--estimate` 不调 API 直接打印运行预估（调用次数、completion token 上限、费用上限、耗时），小沐贴出预估、Stone 回"去/改"即确认。聊天侧规则同步更新：不再是"先问一句"，而是"预估附首条"。
 2. **Judge 结构化契约**：judge 必须返回 per-answer `decisions`（`verdict: accept|reject|escalate` + `severity: critical|major|minor|nitpick` + `evidence`）；代码层 `validate_judge` 严格校验，不合规 = judge 失败 → 降级人终审（fail-open）；`escalate` 自动转人终审；synth 前过滤 `nitpick`；旧格式兼容转换。2026-10-11 实测 cohere 一次输出合规 JSON 并正确拒掉答非所问。
 3. **最坏路径封顶价 + 健康检测**：启动前算最坏路径费用——付费模型缺价格表（`--prices`）或超 `--budget` 直接拒绝启动（exit 2/3），免费模式费用恒 $0；panel 前对每模型轻量 ping（max_tokens=50，太小会误杀），死的本轮剔除，全死则 fail-closed。
 
 实现中学到的 quirk：cohere 在 `max_tokens≤20` 时直接 `finish_reason=length` 返回空——health ping 必须 ≥50（已记入模型档案）。
+
 ## 12. v0.3 实现（Stone 2026-10-11 拍板，当天实现+验证）
 
 1. **双 judge 交叉验证**（`--judge-model2`）：两个异构 judge 并行打分，winner 一致才自动通过，否则转人终审。
@@ -176,12 +157,13 @@
    - 老鸟钩子：技术亮点讲清楚了吗？有什么值得 star/PR 的点被埋没了？
    - 准确性：有没有夸大、过时或与代码不符的描述？
    - 推广性：有没有一句能拿去发 Twitter/HN 的 slogan？
-3. **执行**：2-3 家模型并行评审 → 双 judge 挑出最有价值的 3-5 条 → 人（Stone）拍板采纳。
+3. **执行**：2-3 家模型并行评审 → 双 judge 挑出最有价值的 3-5 条 → 人（Stone/小沐）拍板采纳。
 4. **记录**：评审结论记入本节附录，标注日期与版本。
 5. **豁免**：紧急修复可先合并后补评审，但必须在 24h 内补。
 
 ### 附录：评审记录
 - 2026-10-12：README 写作评审（ultra-550b + super-120b）。结论：6 节结构（Hero/快跑/架构/对比表/进阶/贡献）；小白三手法（一键 demo、对比表、init 向导）；老鸟三钩子（双 judge、--context-data、fail-open）；slogan："One prompt, a council of models, zero hallucinations."
+
 ## 14. Validator 层与评测 Harness 排查清单（Stone 2026-10-13 定，design 先行）
 
 背景：v3.1 评测实跑验证确认，12 家里 9 家出现"代码对、粘贴输出与实跑不符"（ultra-550b 惯犯×2）。"Benchmark 测的是模型+Harness"——harness 必须自己验证数字，不能信模型贴的。
