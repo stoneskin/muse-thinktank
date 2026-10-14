@@ -26,10 +26,11 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 
 AI agents don't call `thinktank.py` directly — they invoke it through the
 **muse-thinktank skill** (an Agent Skills–compatible `SKILL.md` playbook:
-install → estimate → run → report). The skill is agent-agnostic: it works
-with any AI agent that can run shell commands and read files (Muse, Claude,
-or others). The repo itself is plain Python with zero dependencies and calls
-no Muse-specific APIs.
+install → estimate → run → report). The skill works with any AI agent that
+can run shell commands and read files; the repo itself is plain Python with
+zero dependencies and calls no proprietary APIs. That said, this project is
+built for Muse users first: optimized for the Muse workflow and primarily
+tested inside Muse.
 
 ## Quickstart
 
