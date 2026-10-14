@@ -38,6 +38,22 @@ python3 thinktank.py ask --estimate --models <...> "你的问题"
 # 输出：调用次数、token 上限、费用上限、预计耗时
 ```
 
+## 项目结构
+
+- `thinktank.py` —— 主 CLI 入口。
+- `tt/` —— Python 包（**tt = thinktank**，项目名缩写）。所有 harness 模块都在这里（`context.py`、`members.py`、`budget.py`……），外加用 `python3 -m tt.<name>` 运行的 CLI 工具（如 `tt.stock_context`）。
+- `scripts/` —— 独立运维脚本（如 `tt-go.py`，estimate-first wrapper）。
+- `docs/` —— 用户指南、设计文档、问题模板。
+
+
+## 写给 AI agent
+
+AI agent 不直接调用 `thinktank.py`——它们通过 **muse-thinktank skill**
+（Agent Skills 兼容的 `SKILL.md`：安装 → 估算 → 运行 → 汇报）来调用。
+skill 适用于任何能跑 shell 命令、读文件的 AI agent；repo 本身是纯 Python
+零依赖，不调用任何专有 API。不过，这个项目优先为 Muse 用户打造：
+针对 Muse 工作流优化，主要在 Muse 里测试。
+
 ## 架构
 
 ```mermaid

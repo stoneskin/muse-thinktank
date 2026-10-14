@@ -49,6 +49,16 @@ python3 thinktank.py ask --estimate --models <...> "your question"
 # prints: call count, token cap, cost cap, ETA
 ```
 
+## Project layout
+
+- `thinktank.py` — main CLI entry point.
+- `tt/` — the Python package (**tt = thinktank**, the project name). All
+  harness modules live here (`context.py`, `members.py`, `budget.py`, …)
+  plus CLI tools run via `python3 -m tt.<name>` (e.g. `tt.stock_context`).
+- `scripts/` — standalone operator scripts (e.g. `tt-go.py`, the
+  estimate-first wrapper).
+- `docs/` — user guides, design docs, question templates.
+
 ## Architecture
 
 ```mermaid
