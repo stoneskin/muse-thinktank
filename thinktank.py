@@ -145,6 +145,21 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question):
     return 0
 
 
+def _maybe_write_decision(a, rec):
+    """v0.14: write Decision Object JSON if --decision was given."""
+    if not getattr(a, "decision", None):
+        return
+    try:
+        from tt.decision_object import build_decision_object
+        import json
+        obj = build_decision_object(rec.data)
+        with open(a.decision, "w") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        log("decision object saved: %s" % a.decision)
+    except Exception as e:
+        log("decision object write failed: %s" % e)
+
+
 def main():
     # v0.11: --replay pre-parse (question/models/judge not required)
     if "--replay" in sys.argv:
@@ -156,6 +171,23 @@ def main():
             print("error: %s" % err, file=sys.stderr)
             raise SystemExit(2)
         print(replay_summary(rec))
+        return 0
+
+    # v0.13: --golden pre-parse (offline, no models needed)
+    if "--golden" in sys.argv:
+        from tt.golden_cases import load_cases
+        idx = sys.argv.index("--golden")
+        cat = None
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            cat = sys.argv[idx + 1]
+            if cat == "all":
+                cat = None
+        cases = load_cases(cat)
+        print("golden cases (%s): %d loaded"
+              % (cat or "all", len(cases)))
+        for c in cases:
+            print("  [%s] %s: %s" % (c["_category"], c["id"], c["title"]))
+        print("note: full harness run needs --golden-run (models required)")
         return 0
 
     ap = argparse.ArgumentParser()
@@ -245,6 +277,21 @@ def main():
     ap.add_argument("--replay", default=None, metavar="PATH",
                     help="v0.11: offline replay of a run record: validate "
                          "schema + hash, print summary, make zero API calls.")
+    ap.add_argument("--skill", default=None,
+                    help="v0.12: comma-separated skill names to run before "
+                         "the panel (manual selection for seed phase). "
+                         "Each skill's run(ctx) populates shared context; "
+                         "skill inputs come from --skill-args JSON.")
+    ap.add_argument("--golden", default=None, metavar="CATEGORY",
+                    nargs="?", const="all",
+                    help="v0.13: run golden cases (offline regression). "
+                         "Optional category: stock, code-review, docs. "
+                         "Exits non-zero on any failure.")
+    ap.add_argument("--decision", default=None, metavar="PATH",
+                    help="v0.14: write a machine-readable Decision Object "
+                         "JSON (verdict/confidence/disagreements/evidence/"
+                         "actions, derived from the run record) to PATH "
+                         "at end of run.")
     ap.add_argument("question",
                     help="the question to deliberate")
     a = ap.parse_args()
@@ -409,6 +456,51 @@ def main():
     panel_question = build_panel_prompt(a.question, ctx_data)
     panel_system = PANEL_SYSTEM if ctx_data else None
 
+    # v0.12: run seed skills before the panel (manual selection).
+    # Skills populate the shared context; their outputs feed --context-data.
+    skill_ctx = None
+    if a.skill:
+        import importlib.util
+        from tt.skill_manifest import (load_all, resolve_order,
+                                       SkillContext, ManifestError)
+        try:
+            manifests = load_all("tt/skills")
+        except ManifestError as e:
+            print("error: skill manifest: %s" % e, file=sys.stderr)
+            raise SystemExit(2)
+        wanted = [s.strip() for s in a.skill.split(",") if s.strip()]
+        unknown = [s for s in wanted if s not in manifests]
+        if unknown:
+            print("error: unknown skill(s): %s (available: %s)"
+                  % (", ".join(unknown), ", ".join(sorted(manifests))),
+                  file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            order = resolve_order(
+                {k: v for k, v in manifests.items() if k in wanted})
+        except ManifestError as e:
+            print("error: skill dependencies: %s" % e, file=sys.stderr)
+            raise SystemExit(2)
+        skill_ctx = SkillContext()
+        # Seed skill inputs: question is always available; per-skill
+        # overrides come from --skill-args JSON if provided.
+        skill_ctx.put("user_query", a.question)
+        for name in order:
+            mp = manifests[name]
+            sp = os.path.join("tt", "skills", name, "skill.py")
+            spec = importlib.util.spec_from_file_location(
+                "skill_%s" % name.replace("-", "_"), sp)
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+                out = mod.run(skill_ctx)
+                log("skill %s ok: %d output keys"
+                    % (name, len(out) if isinstance(out, dict) else 0))
+            except Exception as e:
+                print("error: skill %s failed: %s" % (name, e),
+                      file=sys.stderr)
+                raise SystemExit(2)
+
     # v0.11: run record collector (no-op unless --record given)
     rec = None
     if a.record:
@@ -426,6 +518,9 @@ def main():
         for jm in [a.judge_model] + ([a.judge_model2] if a.judge_model2 else []):
             rec.add_model("judge", jm)
         rec.add_model("synth", synth_model)
+        if skill_ctx:
+            rec.add_stage("skills",
+                          outputs=[{"skill": n} for n in order])
 
     # ---- v0.4: fetch PR diff for code review ----
     if a.pr_diff:
@@ -728,6 +823,7 @@ def main():
             rec.set_verdict("[awaiting human verdict: show-all path]")
             rec.save(a.record)
             log("run record saved: %s" % a.record)
+            _maybe_write_decision(a, rec)
         # v0.3a: persist member stats (also on human-verdict path)
         if a.member_state:
             save_member_state(a.member_state, member_state)
@@ -802,6 +898,7 @@ def main():
         rec.add_cost(sr["cost"])
         rec.save(a.record)
         log("run record saved: %s" % a.record)
+        _maybe_write_decision(a, rec)
     # v0.3a: persist member stats
     if a.member_state:
         save_member_state(a.member_state, member_state)

@@ -1,0 +1,1 @@
+{"category":"stock","expects":{"min_score":3.0,"must_contain":["RSI","MACD","止损"],"must_not_contain":["我不知道","无法分析"]},"id":"G-STOCK-01","prompt":"TSLA 当前 $365，RSI(14)=68，MACD 金叉，10 日均线在 20 日均线上方。给出一句话操作建议，必须包含止损位。","scoring":"RSI/MACD 提及 1 分；具体止损位 1 分；方向明确 1 分","title":"股票技术面一句话建议"}

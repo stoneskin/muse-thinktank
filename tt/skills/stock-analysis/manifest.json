@@ -1,0 +1,59 @@
+{
+  "capability": "Fetch technical indicators and structure stock analysis context",
+  "data_sources": [
+    "yahoo-finance-api"
+  ],
+  "depends_on": [],
+  "domain": [
+    "finance",
+    "stocks"
+  ],
+  "input_schema": {
+    "plan": {
+      "required": false,
+      "type": "string"
+    },
+    "position": {
+      "required": false,
+      "type": "string"
+    },
+    "ticker": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "name": "stock-analysis",
+  "provides": {
+    "data_provider": "tt/stock_context.py",
+    "domain_knowledge": "docs/stock-analysis-guide.md",
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "ticker": {
+          "type": "string"
+        },
+        "position": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "indicators": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "trigger": {
+    "intent": "stock_analysis",
+    "keywords": [
+      "股票",
+      "stock",
+      "ticker",
+      "股价",
+      "财报",
+      "earnings"
+    ]
+  },
+  "version": "1.0.0"
+}

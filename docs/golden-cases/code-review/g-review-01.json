@@ -1,0 +1,1 @@
+{"category":"code-review","expects":{"must_contain":["空指针","边界"],"must_not_contain":["看起来不错","LGTM"]},"id":"G-REVIEW-01","prompt":"Review this Python function for bugs:\n\ndef get_item(items, idx):\n    return items[idx]\n\nList all defects.","scoring":"空指针/越界 1 分；类型检查 1 分","title":"空指针 review"}
