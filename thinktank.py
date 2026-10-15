@@ -145,21 +145,6 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question):
     return 0
 
 
-def _maybe_write_decision(a, rec):
-    """v0.14: write Decision Object JSON if --decision was given."""
-    if not getattr(a, "decision", None):
-        return
-    try:
-        from tt.decision_object import build_decision_object
-        import json
-        obj = build_decision_object(rec.data)
-        with open(a.decision, "w") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-        log("decision object saved: %s" % a.decision)
-    except Exception as e:
-        log("decision object write failed: %s" % e)
-
-
 def main():
     # v0.11: --replay pre-parse (question/models/judge not required)
     if "--replay" in sys.argv:
@@ -189,6 +174,47 @@ def main():
             print("  [%s] %s: %s" % (c["_category"], c["id"], c["title"]))
         print("note: full harness run needs --golden-run (models required)")
         return 0
+
+    # v0.14: --golden-run pre-parse (executes cases via model API)
+    if "--golden-run" in sys.argv:
+        from tt.golden_cases import load_cases, run_all
+        idx = sys.argv.index("--golden-run")
+        cat = None
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            cat = sys.argv[idx + 1]
+            if cat == "all":
+                cat = None
+        # Model comes from --models (first one used for harness)
+        model = None
+        if "--models" in sys.argv:
+            midx = sys.argv.index("--models")
+            if midx + 1 < len(sys.argv):
+                model = sys.argv[midx + 1].split(",")[0].strip()
+        if not model:
+            print("error: --golden-run requires --models <model-id>",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        from tt.transport import api_key, chat
+        key = api_key()
+
+        def _harness(case):
+            prompt = case.get("prompt", "")
+            try:
+                r = chat(model,
+                         [{"role": "user", "content": prompt}],
+                         max_tokens=800, temperature=0.3,
+                         timeout=120, key=key)
+            except Exception as e:
+                return {"error": str(e)[:200]}
+            if r.get("error"):
+                return {"error": r["error"][:200]}
+            return {"text": r.get("text") or "", "score": 0}
+
+        passed, failed, details = run_all(_harness, category=cat,
+                                          verbose=True, max_workers=1,
+                                          timeout=180)
+        # Non-zero exit on any failure (regression gate)
+        raise SystemExit(1 if failed else 0)
 
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["ask"])
@@ -287,11 +313,6 @@ def main():
                     help="v0.13: run golden cases (offline regression). "
                          "Optional category: stock, code-review, docs. "
                          "Exits non-zero on any failure.")
-    ap.add_argument("--decision", default=None, metavar="PATH",
-                    help="v0.14: write a machine-readable Decision Object "
-                         "JSON (verdict/confidence/disagreements/evidence/"
-                         "actions, derived from the run record) to PATH "
-                         "at end of run.")
     ap.add_argument("question",
                     help="the question to deliberate")
     a = ap.parse_args()
@@ -823,7 +844,6 @@ def main():
             rec.set_verdict("[awaiting human verdict: show-all path]")
             rec.save(a.record)
             log("run record saved: %s" % a.record)
-            _maybe_write_decision(a, rec)
         # v0.3a: persist member stats (also on human-verdict path)
         if a.member_state:
             save_member_state(a.member_state, member_state)
@@ -898,7 +918,6 @@ def main():
         rec.add_cost(sr["cost"])
         rec.save(a.record)
         log("run record saved: %s" % a.record)
-        _maybe_write_decision(a, rec)
     # v0.3a: persist member stats
     if a.member_state:
         save_member_state(a.member_state, member_state)

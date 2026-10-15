@@ -49,7 +49,7 @@ def api_key():
     # Try custom.openrouter credential surrogate first, fall back to env var
     try:
         import sys
-        sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+        sys.path.insert(0, "/opt/hatch/workflow-skills/custom-connector-setup/bin")
         from dynamic_credentials import dynamic_credential_entry
         entry = dynamic_credential_entry("custom.openrouter", "access_token")
         surrogate = str(entry["surrogate"]).strip()
