@@ -38,23 +38,12 @@ python3 thinktank.py ask --estimate --models <...> "你的问题"
 # 输出：调用次数、token 上限、费用上限、预计耗时
 ```
 
-## 项目结构
-
-- `thinktank.py` —— 主 CLI 入口。
-- `tt/` —— Python 包（**tt = thinktank**，项目名缩写）。所有 harness 模块都在这里（`context.py`、`members.py`、`budget.py`……），外加用 `python3 -m tt.<name>` 运行的 CLI 工具（如 `tt.stock_context`）。
-- `scripts/` —— 独立运维脚本（如 `tt-go.py`，estimate-first wrapper）。
-- `docs/` —— 用户指南、设计文档、问题模板。
-
-
-## 写给 AI agent
-
-AI agent 不直接调用 `thinktank.py`——它们通过 **muse-thinktank skill**
-（Agent Skills 兼容的 `SKILL.md`：安装 → 估算 → 运行 → 汇报）来调用。
-skill 适用于任何能跑 shell 命令、读文件的 AI agent；repo 本身是纯 Python
-零依赖，不调用任何专有 API。不过，这个项目优先为 Muse 用户打造：
-针对 Muse 工作流优化，主要在 Muse 里测试。
-
 ## 架构
+
+<img src="docs/thinktank-pipeline.svg" alt="muse-thinktank 流程：提问 → 费用预估 → panel → judge → synth 或人终审" width="680">
+
+<details>
+<summary>文本版流程（mermaid）</summary>
 
 ```mermaid
 flowchart LR
@@ -81,9 +70,6 @@ flowchart LR
 | **双 judge 交叉验证** | 单 judge 自己幻觉没人发现 | winner 不一致自动转人终审 |
 | **实时数据注入** (`--context-data`) | 模型训练数据过时（如 2024 年知识答 2026 年股票） | 调度器先搜实时数据注入，模型用真数字分析 |
 | **动态成员选择** | 免费模型时好时坏 | 按历史成功率 × 延迟自动过滤 |
-| **Judge 黑名单**（v0.7） | 不靠谱的 judge 反复失败 | 连续 2 次失败进黑名单，24 小时冷却 |
-| **防编造校验器**（v0.6） | 模型编造输出 | 校验"声称的运行"vs"实际运行"，抓编造 |
-| **大 diff 切块评审**（v0.8/v0.9） | 大 diff 让 judge 崩溃（19k token 输入） | 四步流水线：骨架→切块→评审→一致性检查 |
 | **Fail-open / Fail-closed** | 某模型挂了整轮报废 | panel 降级继续；judge 全挂转人工 |
 | **分歧熵追踪** | 不知道模型们分歧有多大 | 每轮计算 entropy，为多轮辩论铺路 |
 
@@ -133,15 +119,6 @@ python3 thinktank.py ask --red-team \
 
 看 `examples/stock-analysis/` 了解"先备数据再跑 panel"的完整模式。
 
-# 切块 PR 评审（v0.9）：大 diff 四步流水线
-python3 thinktank.py ask --pr-diff https://github.com/owner/repo/pull/123 \
-  --chunk-tokens 3000 --models <...> "Review this PR"
-# 1. 骨架提取（确定性，无模型调用）
-# 2. 按文件切成 ~3k token 的块
-# 3. 每块带着全局骨架独立评审
-# 4. synth 检查跨文件一致性
-# diff > 2× chunk-tokens 时自动触发。--chunk-tokens 0 可关闭。
-
 ## 示例
 
 - **[股票分析](examples/stock-analysis/)**——用 `--context-data` 注入实时行情数据；panel 基于新鲜数字推理，而不是陈旧的训练记忆。
@@ -164,10 +141,6 @@ python3 thinktank.py ask --pr-diff https://github.com/owner/repo/pull/123 \
 
 ## 状态
 
-v0.9（2026-10-13）：切块 PR 评审——四步流水线（骨架→切块→评审→一致性检查），"骨架常驻，细节按需加载"。
-v0.8（2026-10-13）：map-reduce diff 切块（`--chunk-tokens`）。
-v0.7（2026-10-13）：judge 黑名单——连续 2 次失败进黑名单，24 小时冷却。
-v0.6（2026-10-13）：防编造校验器 + judge repair-retry（宽容 JSON 解析）。
 v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级；公开榜单先验（`--priors`）——LMArena + OpenRouter 稳定性做基础分。
 v0.3b（2026-10-12）：双 judge、动态成员选择、实时数据注入（`--context-data`）、智囊团评审框架。
 
