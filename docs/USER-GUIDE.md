@@ -65,6 +65,29 @@ Red-team runs the normal deliberation first, then critics attack the draft and g
 
 Muse shows you the cost and ETA first (free models = $0). Say "go" and it runs.
 
+## Specialist modes
+
+For certain topics, Muse loads specialist background data *before* the panel starts debating, so the AIs argue from real context instead of thin air:
+
+- **Stock analysis** — when you ask about a stock, Muse pulls live technical indicators first (RSI, MACD, moving averages, volume, 52-week range). The panel debates real numbers, not stale training data.
+- **Code review** — when you ask for a PR review, Muse fetches the actual diff and file stats first.
+- **Writing help** — when you ask for an article or doc, Muse sets up audience, language, and style context first.
+
+You don't need to do anything — Muse picks the right mode from your question. To force one, say e.g. "use stock-analysis mode for this".
+
+## Save and replay a run
+
+Every deliberation can be saved as a **run record**: one file holding the question, which models ran, what each stage produced, the cost, and the final verdict.
+
+- **Save it**: after a run, say "save this run". You get a file you can keep, share, or revisit later.
+- **Replay it**: say "replay that run". Muse prints the summary from the saved file — zero AI calls, costs $0.
+
+Handy when you want to audit an old decision, or compare how the same question performs weeks apart.
+
+## Built-in quality checks
+
+The project ships with offline regression tests ("golden cases") covering stock analysis, code review, and docs. They run with zero API cost and fail loudly if anything breaks — mostly useful for developers. Curious? Ask Muse to "run the golden cases".
+
 ## FAQ
 
 **Q: Does it cost money?**

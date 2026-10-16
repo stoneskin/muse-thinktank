@@ -158,6 +158,64 @@ def main():
         print(replay_summary(rec))
         return 0
 
+    # v0.13: --golden pre-parse (offline, no models needed)
+    if "--golden" in sys.argv:
+        from tt.golden_cases import load_cases
+        idx = sys.argv.index("--golden")
+        cat = None
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            cat = sys.argv[idx + 1]
+            if cat == "all":
+                cat = None
+        cases = load_cases(cat)
+        print("golden cases (%s): %d loaded"
+              % (cat or "all", len(cases)))
+        for c in cases:
+            print("  [%s] %s: %s" % (c["_category"], c["id"], c["title"]))
+        print("note: full harness run needs --golden-run (models required)")
+        return 0
+
+    # v0.14: --golden-run pre-parse (executes cases via model API)
+    if "--golden-run" in sys.argv:
+        from tt.golden_cases import load_cases, run_all
+        idx = sys.argv.index("--golden-run")
+        cat = None
+        if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+            cat = sys.argv[idx + 1]
+            if cat == "all":
+                cat = None
+        # Model comes from --models (first one used for harness)
+        model = None
+        if "--models" in sys.argv:
+            midx = sys.argv.index("--models")
+            if midx + 1 < len(sys.argv):
+                model = sys.argv[midx + 1].split(",")[0].strip()
+        if not model:
+            print("error: --golden-run requires --models <model-id>",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        from tt.transport import api_key, chat
+        key = api_key()
+
+        def _harness(case):
+            prompt = case.get("prompt", "")
+            try:
+                r = chat(model,
+                         [{"role": "user", "content": prompt}],
+                         max_tokens=800, temperature=0.3,
+                         timeout=120, key=key)
+            except Exception as e:
+                return {"error": str(e)[:200]}
+            if r.get("error"):
+                return {"error": r["error"][:200]}
+            return {"text": r.get("text") or "", "score": 0}
+
+        passed, failed, details = run_all(_harness, category=cat,
+                                          verbose=True, max_workers=1,
+                                          timeout=180)
+        # Non-zero exit on any failure (regression gate)
+        raise SystemExit(1 if failed else 0)
+
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["ask"])
     ap.add_argument("--models", required=True,
@@ -245,6 +303,16 @@ def main():
     ap.add_argument("--replay", default=None, metavar="PATH",
                     help="v0.11: offline replay of a run record: validate "
                          "schema + hash, print summary, make zero API calls.")
+    ap.add_argument("--skill", default=None,
+                    help="v0.12: comma-separated skill names to run before "
+                         "the panel (manual selection for seed phase). "
+                         "Each skill's run(ctx) populates shared context; "
+                         "skill inputs come from --skill-args JSON.")
+    ap.add_argument("--golden", default=None, metavar="CATEGORY",
+                    nargs="?", const="all",
+                    help="v0.13: run golden cases (offline regression). "
+                         "Optional category: stock, code-review, docs. "
+                         "Exits non-zero on any failure.")
     ap.add_argument("question",
                     help="the question to deliberate")
     a = ap.parse_args()
@@ -409,6 +477,51 @@ def main():
     panel_question = build_panel_prompt(a.question, ctx_data)
     panel_system = PANEL_SYSTEM if ctx_data else None
 
+    # v0.12: run seed skills before the panel (manual selection).
+    # Skills populate the shared context; their outputs feed --context-data.
+    skill_ctx = None
+    if a.skill:
+        import importlib.util
+        from tt.skill_manifest import (load_all, resolve_order,
+                                       SkillContext, ManifestError)
+        try:
+            manifests = load_all("tt/skills")
+        except ManifestError as e:
+            print("error: skill manifest: %s" % e, file=sys.stderr)
+            raise SystemExit(2)
+        wanted = [s.strip() for s in a.skill.split(",") if s.strip()]
+        unknown = [s for s in wanted if s not in manifests]
+        if unknown:
+            print("error: unknown skill(s): %s (available: %s)"
+                  % (", ".join(unknown), ", ".join(sorted(manifests))),
+                  file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            order = resolve_order(
+                {k: v for k, v in manifests.items() if k in wanted})
+        except ManifestError as e:
+            print("error: skill dependencies: %s" % e, file=sys.stderr)
+            raise SystemExit(2)
+        skill_ctx = SkillContext()
+        # Seed skill inputs: question is always available; per-skill
+        # overrides come from --skill-args JSON if provided.
+        skill_ctx.put("user_query", a.question)
+        for name in order:
+            mp = manifests[name]
+            sp = os.path.join("tt", "skills", name, "skill.py")
+            spec = importlib.util.spec_from_file_location(
+                "skill_%s" % name.replace("-", "_"), sp)
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)
+                out = mod.run(skill_ctx)
+                log("skill %s ok: %d output keys"
+                    % (name, len(out) if isinstance(out, dict) else 0))
+            except Exception as e:
+                print("error: skill %s failed: %s" % (name, e),
+                      file=sys.stderr)
+                raise SystemExit(2)
+
     # v0.11: run record collector (no-op unless --record given)
     rec = None
     if a.record:
@@ -426,6 +539,9 @@ def main():
         for jm in [a.judge_model] + ([a.judge_model2] if a.judge_model2 else []):
             rec.add_model("judge", jm)
         rec.add_model("synth", synth_model)
+        if skill_ctx:
+            rec.add_stage("skills",
+                          outputs=[{"skill": n} for n in order])
 
     # ---- v0.4: fetch PR diff for code review ----
     if a.pr_diff:

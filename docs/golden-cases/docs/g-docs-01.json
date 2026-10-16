@@ -1,0 +1,1 @@
+{"category":"docs","expects":{"must_contain":["fail-closed"],"must_not_contain":["TODO"]},"id":"G-DOCS-01","prompt":"用一句话解释 thinktank 的 fail-closed 是什么意思。","scoring":"准确 1 分；简洁 1 分","title":"fail-closed 一句话解释"}
