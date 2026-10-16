@@ -21,17 +21,6 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 > **New here?** Start with the [User Guide](docs/USER-GUIDE.md) — from zero to your first run in 15 minutes.
 > （中文用户：先看[用户使用说明](docs/USER-GUIDE_zh.md)。)
 
-
-## For AI agents
-
-AI agents don't call `thinktank.py` directly — they invoke it through the
-**muse-thinktank skill** (an Agent Skills–compatible `SKILL.md` playbook:
-install → estimate → run → report). The skill works with any AI agent that
-can run shell commands and read files; the repo itself is plain Python with
-zero dependencies and calls no proprietary APIs. That said, this project is
-built for Muse users first: optimized for the Muse workflow and primarily
-tested inside Muse.
-
 ## Quickstart
 
 ```bash
@@ -49,17 +38,12 @@ python3 thinktank.py ask --estimate --models <...> "your question"
 # prints: call count, token cap, cost cap, ETA
 ```
 
-## Project layout
-
-- `thinktank.py` — main CLI entry point.
-- `tt/` — the Python package (**tt = thinktank**, the project name). All
-  harness modules live here (`context.py`, `members.py`, `budget.py`, …)
-  plus CLI tools run via `python3 -m tt.<name>` (e.g. `tt.stock_context`).
-- `scripts/` — standalone operator scripts (e.g. `tt-go.py`, the
-  estimate-first wrapper).
-- `docs/` — user guides, design docs, question templates.
-
 ## Architecture
+
+<img src="docs/thinktank-pipeline.svg" alt="muse-thinktank pipeline: question → estimate → panel → judges → synth or human review" width="680">
+
+<details>
+<summary>文本版流程（mermaid）</summary>
 
 ```mermaid
 flowchart LR
@@ -86,9 +70,6 @@ One entry point: `thinktank.py` + `tt/` package (stdlib only: `urllib` + `json` 
 | **Dual-judge cross-validation** | A single judge hallucinating unnoticed | Disagreement auto-escalates to human |
 | **Real-time data injection** (`--context-data`) | Stale training data (e.g. 2024 knowledge answering 2026 stock questions) | Orchestrator pre-searches live data; models analyze real numbers |
 | **Dynamic member selection** | Free models flaky | Auto-filter by historical success rate × latency |
-| **Judge blacklist** (v0.7) | Unreliable judges keep failing | 2 consecutive failures → blacklisted (24h cooldown) |
-| **Anti-fabrication validator** (v0.6) | Models inventing outputs | Validates claimed vs actual runs; flags fabrication |
-| **Chunked PR review** (v0.8/v0.9) | Large diffs crash judges (19k-token inputs) | 4-step pipeline: skeleton → chunk → review → consistency check |
 | **Fail-open / Fail-closed** | One dead model kills the round | Panel degrades gracefully; judges all-down → human |
 | **Disagreement entropy** | No measure of panel divergence | Computed per round; scaffolds multi-round debate |
 
@@ -136,22 +117,6 @@ python3 thinktank.py ask --red-team \
 # findings (critical/major/minor; nitpicks filtered out)
 ```
 
-# Chunked PR review (v0.9): 4-step pipeline for large diffs
-python3 thinktank.py ask --pr-diff https://github.com/owner/repo/pull/123 \
-  --chunk-tokens 3000 --models <...> "Review this PR"
-# 1. Skeleton extraction (deterministic, no model call)
-# 2. Split diff by file into ~3k-token chunks
-# 3. Each chunk reviewed with global skeleton + local diff
-# 4. Synth checks cross-file consistency
-# Auto-triggers when diff > 2× chunk-tokens. --chunk-tokens 0 disables.
-
-# Judge blacklist (v0.7): auto-avoid unreliable judges
-# 2 consecutive judge failures → blacklisted for 24h (warning at startup)
-
-# Anti-fabrication validator (v0.6)
-python3 -m tt.validator --file output.md --model <id>
-# Checks if model outputs match actual runs; flags invented results
-
 See `examples/stock-analysis/` for the full "prepare-data-first" pattern.
 
 ## Examples
@@ -181,10 +146,6 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Status
 
-v0.9 (2026-10-13): chunked PR review — 4-step pipeline (skeleton → chunk → review → consistency check) for large diffs; "skeleton resident, details on demand."
-v0.8 (2026-10-13): map-reduce diff chunking (`--chunk-tokens`).
-v0.7 (2026-10-13): judge blacklist — 2 consecutive failures → 24h cooldown.
-v0.6 (2026-10-13): anti-fabrication validator + judge repair-retry (tolerant JSON parsing).
 v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity; public benchmark priors (`--priors`) — LMArena + OpenRouter stability as base capability scores.
 v0.3b (2026-10-12): dual judges, dynamic member selection, real-time data injection (`--context-data`), think-tank review framework.
 
