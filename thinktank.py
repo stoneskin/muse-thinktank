@@ -33,6 +33,41 @@ from tt.members import (
 )
 
 
+# v0.15: tier presets — panel uses cheap models, judge stays strong.
+# Model ids are exact OpenRouter ids; scores from docs/model-profiles.md
+# (real runs, 2026-10-11/13). Judge never overlaps panel (fail-closed).
+# Per repo AGENTS.md: minimax never judges (2x contract violation);
+# judge priority: sonnet-5.5 > gemini-3-flash.
+TIER_PRESETS = {
+    "free": {
+        "models": ["nvidia/nemotron-3-super-120b-a12b:free",
+                   "dots-studio/dots-3-note-preview:free"],
+        "judge_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "note": "$0; best free panel (super-120b, dots-3) + best free judge (ultra-550b)",
+    },
+    "cheap": {
+        "models": ["deepseek/deepseek-v3.2",
+                   "meta-llama/llama-4-maverick"],
+        "judge_model": "openai/gpt-5-mini",
+        "note": "~$0.05-0.10/run; stock 15/15 panel, honest judge (quant 18.0)",
+    },
+    "standard": {
+        "models": ["minimax/minimax-m3",
+                   "deepseek/deepseek-v4-pro",
+                   "x-ai/grok-4.7"],
+        "judge_model": "google/gemini-3-flash-preview",
+        "note": "~$0.20-0.40/run; quant 17-18 panel, preferred judge (flash)",
+    },
+    "premium": {
+        "models": ["openai/gpt-5",
+                   "x-ai/grok-4.7",
+                   "google/gemini-3.1-pro-preview"],
+        "judge_model": "anthropic/claude-sonnet-5.5",
+        "note": "~$0.50-1.00/run; top panel, best judge (quant 20.0)",
+    },
+}
+
+
 def run_redteam(a, draft, key, member_state, t_start, spent, question):
     """v0.5 red-team: phase 4 (critics attack draft) + phase 5 (adjudicate).
 
@@ -194,7 +229,6 @@ def main():
             print("error: --golden-run requires --models <model-id>",
                   file=sys.stderr)
             raise SystemExit(2)
-        from tt.transport import api_key, chat
         key = api_key()
 
         def _harness(case):
@@ -218,9 +252,18 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("command", choices=["ask"])
-    ap.add_argument("--models", required=True,
-                    help="comma-separated exact OpenRouter model ids")
-    ap.add_argument("--judge-model", required=True)
+    ap.add_argument("--tier", default=None,
+                    choices=sorted(TIER_PRESETS),
+                    help="v0.15: preset model tier — panel uses cheap models, "
+                         "judge stays strong. Overrides: explicit --models / "
+                         "--judge-model win over the tier. Tiers: " +
+                         "; ".join("%s: %s" % (k, v["note"])
+                                    for k, v in sorted(TIER_PRESETS.items())))
+    ap.add_argument("--models", default=None,
+                    help="comma-separated exact OpenRouter model ids "
+                         "(required unless --tier given)")
+    ap.add_argument("--judge-model", default=None,
+                    help="required unless --tier given")
     ap.add_argument("--judge-model2", default=None,
                     help="v0.3a: second judge for cross-validation; "
                          "disagreement escalates to human")
@@ -316,6 +359,19 @@ def main():
     ap.add_argument("question",
                     help="the question to deliberate")
     a = ap.parse_args()
+
+    # v0.15: --tier fills --models/--judge-model from presets;
+    # explicit flags override the tier.
+    if a.tier:
+        preset = TIER_PRESETS[a.tier]
+        if not a.models:
+            a.models = ",".join(preset["models"])
+        if not a.judge_model:
+            a.judge_model = preset["judge_model"]
+        log("tier=%s: panel=[%s] judge=%s (%s)"
+            % (a.tier, a.models, a.judge_model, preset["note"]))
+    if not a.models or not a.judge_model:
+        ap.error("--models and --judge-model are required unless --tier is given")
 
     models = [m.strip() for m in a.models.split(",") if m.strip()]
     free_set = set()
