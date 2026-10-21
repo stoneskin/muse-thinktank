@@ -141,6 +141,7 @@ python3 thinktank.py ask --red-team \
 
 ## 状态
 
+v0.16（2026-10-21）：外壳稳定性——JSON 契约角色（judge、critics、adjudicator）失败后有一次修复重试（第二次调用 token 上限翻倍；首次空回复走普通重试）；critic 挂掉从备选池补位（未给 `--backup-models` 时按能力分数自动生成）；截断的胜出答案被截断门拦（judge 置信度封顶），每份报告头部带 `completeness:` 行，降级明示、不埋在日志里。故障注入回归测试：`scripts/test_stability.py`。
 v0.5（2026-10-12）：红队模式（`--red-team`）——critics 攻击初稿，adjudicator 按严重性分级；公开榜单先验（`--priors`）——LMArena + OpenRouter 稳定性做基础分。
 v0.3b（2026-10-12）：双 judge、动态成员选择、实时数据注入（`--context-data`）、智囊团评审框架。
 
