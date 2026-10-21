@@ -243,3 +243,49 @@ thinktank.py 运行时接入为 Phase 2，本期不做。
 
 ### 与 v0.8 的区别
 v0.8 是裸切块（无全局视野）。v0.9 每块都带全局骨架，跨文件问题可见。
+
+## 16. Roadmap（Stone 2026-10-14 批准排序）
+
+改进清单 13 项 + auto-skill，按此顺序：
+
+**Phase 0 — 先行（auto-skill 之前）**
+- [x] **Run Record（1）**（2026-10-14 merged）：每次运行生成版本化 JSON（输入、模型、输出、费用、错误），`--record`/`--replay`。纯加法，1-2 天。理由：auto-skill 的 skill 匹配/依赖解析是黑盒决策，没有轨迹可查，debug 靠猜。
+
+**Phase 1 — auto-skill**
+- [x] **Auto-skill Layer 0 + 3 seed skill（0）**（2026-10-14 merged）：manifest 标准 + 股票/code review/写作。Domain pack（6）并入此处，不单独排期。
+
+**Phase 2 — 可测量**
+- [x] **Golden cases（3）**（2026-10-14 merged，三轮评审 12 个问题全修）：股票/code review/文档各一组硬案例，离线回归，指标退化非零退出。
+- [ ] **Decision Object（12）**：机器可读 JSON 输出（verdict/confidence/disagreements/evidence/actions），复用 Run Record schema。
+
+**Phase 3 — 正确性**
+- [x] **外壳稳定性 v0.16**（2026-10-21，红队评审事故驱动：critics 仅 1/3 可用、截断草案带 high confidence 胜出、降级只埋在日志里）：① 结构化角色（judge/critic/adjudicator）契约失败一次修复重试（第二次调用 token 翻倍，空回复走普通重试）；② critic 补位（备选池未给时按 capability-scores 自动生成）；③ 截断门（胜出答案截断 → 置信度封顶 + 报告明示）；④ completeness 报告头（降级宣告进交付物）；⑤ `scripts/test_stability.py` 故障注入回归。实测：同日 cheap 档实跑，judge 空回复重试恢复、critic 修复恢复、adjudicator 两次不过 → 明示降级原始输出。
+- [ ] **角色适配矩阵**（2026-10-21 立项）：选人按角色过滤而非只看总分——用 member-state 按角色（panel/judge/critic/adjudicator）统计契约失败率，多次在某角色掉链的模型自动退出该角色候选（minimax 不进 judge、gpt-5-mini 结构化角色不稳均属此类）。依赖 member-state 数据积累。
+- [ ] **Evidence bundle（8）**：context-data 升级为带 source_id/抓取时间/哈希的证据包。
+- [ ] **Verification Floor（2）**：工具验证下限（测试/lint/计算/时效），证不出标 unverified。依赖 8。
+- [ ] **分歧地图（5）**：已共识/仍分歧/缺证据/需人拍板四块输出。
+- [ ] **Router 视角**（2026-10-16，@kafkaup 路由文章启发）：选人即路由——"路由错了，大模型救不回来"，panel 选错 judge 再强也是在错误答案里挑。两项：① judge 低置信/选不出 winner 时的追问或降级机制；② 选人准确率追踪（事后看选的 panel 是否真合适）。
+- [ ] **Evaluation harness**（2026-10-16，Spec-Driven 论文启发）："Tests catch deterministic regressions; evaluation catches behavioural drift." 给 agent 任务加正式 eval 层——LLM-as-judge 打 0-5 分，设容忍带，低于阈值告警。区别于 Golden cases（3）的离线回归：Golden 测"答案对不对"，eval 测"行为有没有漂"。依赖 3（golden cases 做基线）。
+
+**Phase 4 — 效率**
+- [ ] **阶段缓存（10）**：panel 落盘，judge/synth 失败只重跑缺失阶段。
+- [ ] **上下文压缩（9）**：可测量可关闭，实测为准（Delibera 公开实测 ~12%，非 30-70%）。依赖 3。
+- [ ] **Peer critique（4）**：高分歧时才触发互评轮，不做默认。
+- [ ] **事件流（13）**：CLI/JSON Lines 事件（run_started/panel_completed/human_input_required…），UI 以后再说。
+
+**暂缓**
+- **Provider adapter（11）**：OpenRouter 够用，加第二 provider 时再做。
+
+**Phase 5 — pstack 借鉴**（2026-10-18，Lauren Tan pstack 启发，来源：https://github.com/cursor/plugins/tree/main/pstack）
+- [ ] **Interrogate 加权规则**：多模型独立提出同一 finding = 最高信号。合进 judge 逻辑——两个以上 judge/panel 成员独立指出同一问题时，置信度加权上调；单个模型的孤立 finding 降权。来源：pstack `interrogate` skill Step 4。
+- [ ] **四档 verdict**：Act on / Consider / Noted / Dismissed，替代现在的 accept/reject/escalate 三档。更细的粒度减少"非黑即白"误判。
+- [ ] **Mistake class 机制**（`correct` skill）：同一错误出现两次即记为一类，按"架构 > 类型 > lint/CI > 文档"顺序修，每类修完用真实历史错误验证。升级现有 incident-to-eval——不只"变成考题"，要"让这道题出不出来"。
+- **Competing implementation（7）**：独立 skill/adapter，不碰核心 pipeline。
+
+**排序逻辑**：先可测量（1、3），再更对（8、2），最后更省（10、9）。
+
+**Phase 6 — Harness² 借鉴**（2026-10-18，Google Harness² 启发，来源：https://github.com/google-research/harness2）
+核心思想：模型是常量，harness 是变量——优化外围系统（prompt/工具/编排）不碰模型权重也能涨分。
+- [ ] **8 组件审计**：对照 Harness² 的 8 个可编辑组件（System Prompt、Guardrails、Memory、Tool Guidance、Subagents、Skills、Scripts、Plugins）给 thinktank 做一次覆盖检查。已知缺口：Plugins（无插件机制）、Memory（member-state 只记模型分数）、Scripts（tt/*.py 散装）。
+- [ ] **PPC 优化 judge prompt**（Propose-Probe-Compose）：在 golden cases 上提议 judge prompt 变体 → 探测行为差异（不需标准答案）→ 合成最优版。替代手调 prompt。
+- [ ] **member-state 升级**：从"记模型分数"扩展到"记 harness 改动效果"——每次调 prompt/阈值/路由，记录效果涨跌，经验沉淀。
