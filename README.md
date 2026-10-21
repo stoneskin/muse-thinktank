@@ -146,6 +146,7 @@ human. ([中文版](docs/human-ai-relationship_zh.md))
 
 ## Status
 
+v0.16 (2026-10-21): harness stability — JSON-contract roles (judge, critics, adjudicator) get one repair retry (second call at double the token cap; empty first replies get a plain retry); failed critics are substituted from the backup pool, auto-derived from capability scores when `--backup-models` is omitted; a truncated winning answer is gated (judge confidence capped) and every report carries a `completeness:` header so degradation is declared, not buried in logs. Fault-injection regression tests: `scripts/test_stability.py`.
 v0.5 (2026-10-12): red-team mode (`--red-team`) — critics attack the draft, adjudicator grades findings by severity; public benchmark priors (`--priors`) — LMArena + OpenRouter stability as base capability scores.
 v0.3b (2026-10-12): dual judges, dynamic member selection, real-time data injection (`--context-data`), think-tank review framework.
 

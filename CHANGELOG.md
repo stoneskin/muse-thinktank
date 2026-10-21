@@ -6,6 +6,15 @@ Design rationale lives in [docs/design.md](docs/design.md).
 
 ## [Unreleased]
 
+## [v0.16.0] - 2026-10-21
+
+- **Harness stability** (incident: 2026-10-21 red-team run shipped with 1/3 critics usable and a truncated winning draft, neither declared in the report):
+  - `chat_json_repair`: judge / critic / adjudicator outputs that fail their JSON contract get exactly one repair retry with the failure reason fed back; empty or errored first replies get one plain retry. The second call runs at double the token cap (reasoning models starved by the cap were returning empty). Two failures and the role is out — same circuit-breaker rule as panel members.
+  - Critic substitution: failed red-team critics are replaced from the backup pool before the phase accepts a degraded panel. When `--backup-models` is omitted, the pool is auto-derived from `--capability-scores` (top-scored models outside panel/judge).
+  - Truncation gate: if the judge's winning answer was truncated, confidence is capped at medium and the fact is stated in the report.
+  - Completeness header: every run prints a `completeness:` line (panel x/y · judge state · winner intact/truncated; red-team reports add critics x/y, repairs, substitutes, adjudicator state). Degradation is declared in the deliverable, not just in stderr logs.
+  - `scripts/test_stability.py`: offline fault-injection regression tests pinning these five failure shapes (contract failure, substitution, fail-closed, truncation gate, empty-first-reply).
+
 ## [v0.9.0] - 2026-10-13
 
 - **Chunked PR review** (§15): 4-step pipeline for large diffs — skeleton extraction → chunk → review → consistency check. "Skeleton resident, details on demand" (mimics human reviewers). Auto-triggers when diff > 2× `--chunk-tokens`.

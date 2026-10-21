@@ -68,9 +68,113 @@ TIER_PRESETS = {
 }
 
 
-def run_redteam(a, draft, key, member_state, t_start, spent, question):
+def _parse_critic(text):
+    """Adapter for chat_json_repair: critic JSON contract."""
+    c = extract_json(text)
+    if c is None:
+        return None, False, "no JSON"
+    ok, reason = validate_critic(c)
+    return (c if ok else None), ok, reason
+
+
+def _parse_redteam_judge(text):
+    """Adapter for chat_json_repair: adjudicator JSON contract."""
+    j = extract_json(text)
+    if j is None:
+        return None, False, "no JSON"
+    ok, reason = validate_redteam_judge(j)
+    return (j if ok else None), ok, reason
+
+
+def chat_json_repair(model, msgs, parse, max_tokens, temp, timeout, key,
+                     role="structured"):
+    """v0.16 (harness stability): one repair retry for JSON-contract roles
+    (judge / critic / adjudicator).
+
+    The first reply that fails extraction or validation is fed back with
+    the failure reason; the model gets exactly one chance to return ONLY
+    the corrected JSON. Two failures and the role is out — this mirrors
+    the house circuit-breaker rule (a model that fails twice in a round
+    is done) and replaces the old behavior where a single malformed
+    reply silently removed a judge or critic from the run
+    (2026-10-21: critics 1/3 usable, no retry, no substitute).
+
+    parse(text) -> (obj_or_None, ok, reason).
+    Returns (obj_or_None, last_chat_result, repaired_bool, total_cost).
+
+    At most two calls per role invocation (two failures = out):
+    - call 1 returns text that fails the contract -> call 2 is a repair
+      retry with the failure reason fed back;
+    - call 1 returns nothing usable (transport error / empty — seen
+      2026-10-21 with reasoning judges whose hidden reasoning eats the
+      token cap) -> call 2 is a plain retry.
+    Call 2 always gets double the token cap: a model that truncated or
+    starved on call 1 needs headroom, not the same ceiling.
+    """
+    r = chat(model, msgs, max_tokens, temp, timeout, key)
+    total = r["cost"]
+    if not r["error"] and r["text"]:
+        obj, ok, reason = parse(r["text"])
+        if ok:
+            return obj, r, False, total
+        log("%s %s contract failure (%s) -- one repair retry"
+            % (role, model, reason))
+        call2_msgs = list(msgs) + [
+            {"role": "assistant", "content": r["text"][:4000]},
+            {"role": "user",
+             "content": "Your previous reply was rejected: %s. Reply "
+                        "with ONLY the corrected JSON object -- no "
+                        "prose, no explanation, no code fences."
+                        % reason},
+        ]
+        mode = "repair"
+    else:
+        log("%s %s no usable reply (%s) -- one retry"
+            % (role, model, r["error"] or "empty"))
+        call2_msgs = msgs
+        mode = "retry"
+    r2 = chat(model, call2_msgs, max_tokens * 2, temp, timeout, key)
+    total += r2["cost"]
+    if r2["error"] or not r2["text"]:
+        log("%s %s %s attempt failed (%s)"
+            % (role, model, mode, r2["error"] or "empty"))
+        return None, r2, False, total
+    obj2, ok2, reason2 = parse(r2["text"])
+    if ok2:
+        log("%s %s recovered on %s" % (role, model, mode))
+        return obj2, r2, True, total
+    log("%s %s still invalid after %s (%s)" % (role, model, mode, reason2))
+    return None, r2, False, total
+
+
+def truncation_gate(judge, ok_answers):
+    """v0.16: a truncated answer may still win, but never silently.
+
+    Caps the judge's confidence at medium when the winning answer was
+    truncated and returns a note for the completeness header. (Before
+    this gate, a draft cut off mid-sentence won with high confidence
+    and only the red-team adjudicator noticed — 2026-10-21.)
+    """
+    if not judge:
+        return None
+    w = judge.get("winner")
+    if (isinstance(w, int) and 0 <= w < len(ok_answers)
+            and ok_answers[w].get("truncated")):
+        if judge.get("confidence") == "high":
+            judge["confidence"] = "medium"
+        return ("winner answer #%d (%s) was truncated; confidence capped "
+                "at medium" % (w, ok_answers[w]["model"]))
+    return None
+
+
+def run_redteam(a, draft, key, member_state, t_start, spent, question,
+                critic_backups=None, draft_truncated=False):
     """v0.5 red-team: phase 4 (critics attack draft) + phase 5 (adjudicate).
 
+    v0.16: critics and the adjudicator get one contract-repair retry;
+    failed critics are substituted from critic_backups (the run's backup
+    pool) before the phase gives up; the report header carries a
+    completeness line so degradation is visible, not buried in logs.
     Returns exit code. Prints the attack report; never silently passes.
     """
     t3 = time.time()
@@ -80,67 +184,110 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question):
     log("phase 4/5 red-team: %d critics attack draft (%d chars)"
         % (len(critic_models), len(draft)))
 
-    # Phase 4: critics attack in parallel
+    # Phase 4: critics attack in parallel (v0.16: each critic runs
+    # through chat_json_repair — one contract-repair retry before a
+    # critic counts as failed)
     critic_outputs = []
+    stats = {"repaired": 0, "substitutes": 0}
+    failed_critics = []
+
+    def run_critic(cm):
+        prompt = CRITIC_TEMPLATE.format(draft=draft[:6000],
+                                        question=question[:500])
+        return chat_json_repair(
+            cm,
+            [{"role": "system", "content": CRITIC_SYSTEM},
+             {"role": "user", "content": prompt}],
+            _parse_critic, a.max_tokens, 0.7, a.panel_timeout, key,
+            role="critic")
+
     with cf.ThreadPoolExecutor(max_workers=len(critic_models)) as ex:
-        futs = {}
-        for cm in critic_models:
-            prompt = CRITIC_TEMPLATE.format(draft=draft[:6000],
-                                            question=question[:500])
-            futs[ex.submit(chat, cm,
-                           [{"role": "system", "content": CRITIC_SYSTEM},
-                            {"role": "user", "content": prompt}],
-                           a.max_tokens, 0.7, a.panel_timeout, key)] = cm
+        futs = {ex.submit(run_critic, cm): cm for cm in critic_models}
         for fut in cf.as_completed(futs):
             cm = futs[fut]
             try:
-                r = fut.result()
+                c, _r, repaired, ccost = fut.result()
             except Exception as e:
                 log("critic %s exception: %s" % (cm, e))
+                failed_critics.append(cm)
                 continue
-            spent += r["cost"]
-            if r["error"] or not r["text"]:
-                log("critic %s failed (%s)" % (cm, r["error"] or "empty"))
+            spent += ccost
+            if c is None:
+                log("critic %s failed (invalid after repair)" % cm)
+                failed_critics.append(cm)
                 continue
-            c = extract_json(r["text"])
-            ok, reason = validate_critic(c) if c else (False, "no JSON")
-            if not ok:
-                log("critic %s invalid output (%s)" % (cm, reason))
-                continue
+            if repaired:
+                stats["repaired"] += 1
             critic_outputs.append({"model": cm, "findings": c["findings"]})
-            log("critic %s: %d findings" % (cm, len(c["findings"])))
+            log("critic %s: %d findings%s"
+                % (cm, len(c["findings"]), " (repaired)" if repaired else ""))
+    # v0.16: substitution — a failed critic is replaced from the backup
+    # pool before the phase accepts a degraded panel of critics.
+    pool = [b for b in (critic_backups or [])
+            if b not in critic_models and b != a.judge_model]
+    while failed_critics and pool:
+        sub = pool.pop(0)
+        failed_critics.pop(0)
+        try:
+            c, _r, repaired, ccost = run_critic(sub)
+        except Exception as e:
+            log("critic substitute %s exception: %s" % (sub, e))
+            continue
+        spent += ccost
+        if c is None:
+            log("critic substitute %s failed too" % sub)
+            failed_critics.append(sub)
+            continue
+        if repaired:
+            stats["repaired"] += 1
+        stats["substitutes"] += 1
+        critic_outputs.append({"model": sub, "findings": c["findings"]})
+        log("critic substitute %s promoted: %d findings"
+            % (sub, len(c["findings"])))
     if spent > a.budget:
         log("budget $%.2f exceeded after critics -- aborting" % a.budget)
         raise SystemExit(3)
     if not critic_outputs:
         log("fail-closed: no usable critic output -- refusing empty report")
         raise SystemExit(2)
-    log("phase 4 done in %.1fs -- %d/%d critics ok (spent $%.4f)"
-        % (time.time() - t3, len(critic_outputs), len(critic_models), spent))
+    log("phase 4 done in %.1fs -- %d/%d critics ok (%d repaired, "
+        "%d substitutes, spent $%.4f)"
+        % (time.time() - t3, len(critic_outputs), len(critic_models),
+           stats["repaired"], stats["substitutes"], spent))
 
-    # Phase 5: adjudicator grades and filters
+    # Phase 5: adjudicator grades and filters (v0.16: same repair
+    # retry as the critics before falling back to the raw dump)
     t4 = time.time()
     log("phase 5/5 adjudicate: %s" % a.judge_model)
     critics_block = "\n\n".join(
         "--- critic: %s ---\n%s" % (c["model"], json.dumps(c["findings"],
                                      ensure_ascii=False, indent=2))
         for c in critic_outputs)
-    ar = chat(a.judge_model,
-              [{"role": "system", "content": REDTEAM_JUDGE_SYSTEM},
-               {"role": "user",
-                "content": REDTEAM_JUDGE_TEMPLATE.format(
-                    n=len(critic_outputs), critics=critics_block,
-                    draft=draft[:6000])}],
-              max(1200, a.max_tokens), 0.3, a.panel_timeout, key)
-    spent += ar["cost"]
+    aj, ar, adj_repaired, acost = chat_json_repair(
+        a.judge_model,
+        [{"role": "system", "content": REDTEAM_JUDGE_SYSTEM},
+         {"role": "user",
+          "content": REDTEAM_JUDGE_TEMPLATE.format(
+              n=len(critic_outputs), critics=critics_block,
+              draft=draft[:6000])}],
+        _parse_redteam_judge, max(1200, a.max_tokens), 0.3,
+        a.panel_timeout, key, role="adjudicator")
+    spent += acost
     if spent > a.budget:
         log("budget $%.2f exceeded after adjudicator -- aborting" % a.budget)
         raise SystemExit(3)
-    aj = extract_json(ar["text"]) if (not ar["error"] and ar["text"]) else None
-    ok, reason = validate_redteam_judge(aj) if aj else (False, "no JSON")
-    if not ok:
-        log("adjudicator invalid (%s) -> raw critic dump" % reason)
+    completeness = (
+        "completeness: critics %d/%d (%d repaired, %d substitutes) · "
+        "adjudicator %s · draft %s"
+        % (len(critic_outputs), len(critic_models), stats["repaired"],
+           stats["substitutes"],
+           "ok (repaired)" if (aj is not None and adj_repaired)
+           else "ok" if aj is not None else "FAILED (raw dump below)",
+           "TRUNCATED" if draft_truncated else "intact"))
+    if aj is None:
+        log("adjudicator invalid after repair -> raw critic dump")
         out = ["===== RED TEAM: RAW CRITIC OUTPUT (adjudicator failed) =====",
+               completeness,
                ""]
         for c in critic_outputs:
             out.append("--- %s ---" % c["model"])
@@ -154,6 +301,7 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question):
         kept = [f for f in aj["findings"] if f.get("keep")]
         dropped = [f for f in aj["findings"] if not f.get("keep")]
         out = ["===== RED TEAM REPORT =====",
+               completeness,
                "verdict: %s (confidence: %s)" % (aj["verdict"],
                                                 aj.get("confidence")),
                "",
@@ -484,6 +632,18 @@ def main():
     # ---- pre-panel health check ----
     backups = ([m.strip() for m in a.backup_models.split(",") if m.strip()]
                if a.backup_models else [])
+    # v0.16: when no explicit --backup-models, derive the pool from
+    # capability scores (top-scored models outside panel/judge). Panel
+    # promotion and red-team critic substitution both draw from it, so
+    # a run no longer needs a hand-written backup list to have substitutes.
+    if not backups and cap_scores:
+        pool = sorted((m for m in cap_scores
+                       if m not in models and m not in judge_models),
+                      key=lambda m: -cap_scores[m])
+        backups = pool[:3]
+        if backups:
+            log("auto-backups from capability scores: %s"
+                % ", ".join(backups))
     if not a.no_health_check:
         models, hc_spent = health_check(models, key)
         spent += hc_spent
@@ -795,15 +955,27 @@ def main():
                 % jm)
 
     def run_judge(jm):
-        jr = chat(jm,
-                  [{"role": "system", "content": JUDGE_SYSTEM},
-                   {"role": "user",
-                    "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
-                                                     answers=ans_block)}],
-                  max(900, a.max_tokens), 0.3, a.panel_timeout, key)
-        raw = extract_json(jr["text"]) if not jr["error"] else None
-        j = normalize_judge(raw, len(ok_answers)) \
-            if raw is not None else None
+        # v0.16: judges go through the same repair retry as critics —
+        # one malformed reply no longer silently removes a judge.
+        def _parse_judge(text):
+            raw = extract_json(text)
+            if raw is None:
+                return None, False, "no JSON"
+            jj = normalize_judge(raw, len(ok_answers))
+            if jj is None:
+                return None, False, "contract violation"
+            return jj, True, ""
+
+        j, jr, repaired, jcost = chat_json_repair(
+            jm,
+            [{"role": "system", "content": JUDGE_SYSTEM},
+             {"role": "user",
+              "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
+                                               answers=ans_block)}],
+            _parse_judge, max(900, a.max_tokens), 0.3, a.panel_timeout,
+            key, role="judge")
+        jr = dict(jr)
+        jr["cost"] = jcost
         # v0.3a: track judge bias stats
         if j is not None and a.member_state:
             n_acc = sum(1 for d in j["decisions"]
@@ -811,7 +983,7 @@ def main():
             n_rej = sum(1 for d in j["decisions"]
                         if d["verdict"] == "reject")
             record_judge(member_state, jm, n_acc, n_rej)
-        return jm, jr, j
+        return jm, jr, j, repaired
 
     judge_results = {}
     # v0.4: global timeout for judges — a stuck judge can't deadlock the run.
@@ -828,13 +1000,15 @@ def main():
         for fut in futs:
             jm = futs[fut]
             if fut in pending:
-                judge_results[jm] = ({"cost": 0, "error": "timeout"}, None)
+                judge_results[jm] = ({"cost": 0, "error": "timeout"}, None,
+                                     False)
                 continue
             try:
-                jm2, jr, j = fut.result(timeout=0)
+                jm2, jr, j, jrepaired = fut.result(timeout=0)
             except Exception as exc:
                 log("judge %s error: %s" % (jm, exc))
-                judge_results[jm] = ({"cost": 0, "error": str(exc)}, None)
+                judge_results[jm] = ({"cost": 0, "error": str(exc)}, None,
+                                     False)
                 continue
             spent += jr["cost"]
             # v0.4: runtime budget circuit breaker
@@ -844,12 +1018,13 @@ def main():
                 except BudgetExceeded as be:
                     log("BUDGET EXCEEDED: %s -- aborting" % be)
                     raise SystemExit(3)
-            judge_results[jm] = (jr, j)
+            judge_results[jm] = (jr, j, jrepaired)
             if j is None:
                 log("judge %s invalid output (%s)" % (jm, jr["error"] or "contract violation"))
             else:
-                log("judge %s: winner=%s confidence=%s"
-                    % (jm, j.get("winner"), j.get("confidence")))
+                log("judge %s: winner=%s confidence=%s%s"
+                    % (jm, j.get("winner"), j.get("confidence"),
+                       " (repaired)" if jrepaired else ""))
 
     # v0.3a: cross-validation
     judge_list = [judge_results[jm][1] for jm in judges]
@@ -870,6 +1045,17 @@ def main():
     if spent > a.budget:
         log("budget $%.2f exceeded after judge -- aborting" % a.budget)
         raise SystemExit(3)
+    # v0.16: truncation gate + completeness header. Degradation must be
+    # visible in the report itself, not only in stderr logs.
+    gate_note = truncation_gate(judge, ok_answers)
+    judge_stat = ("failed (human verdict path)" if judge is None else
+                  "ok (repaired)"
+                  if any(judge_results[jm][2] for jm in judges) else "ok")
+    completeness_main = ("completeness: panel %d/%d · judge %s · %s"
+                         % (len(ok_answers), len(models), judge_stat,
+                            gate_note or "winner answer intact"))
+    log(completeness_main)
+    print(completeness_main)
     if rec:
         rec.add_stage("judge",
                       outputs=[{"model": jm,
@@ -921,15 +1107,18 @@ def main():
         w = judge.get("winner")
         if isinstance(w, int) and 0 <= w < len(ok_answers) and w not in rej:
             draft = ok_answers[w]["text"]
+            draft_truncated = bool(ok_answers[w].get("truncated"))
             log("red-team draft: winner #%d (%s)" % (w, ok_answers[w]["model"]))
         else:
             draft = usable[0]["text"]
+            draft_truncated = bool(usable[0].get("truncated"))
             log("red-team draft: no clear winner, using first usable answer")
         if spent > a.budget:
             log("budget $%.2f exceeded before red-team -- aborting" % a.budget)
             raise SystemExit(3)
         return run_redteam(a, draft, key, member_state, t_start, spent,
-                           a.question)
+                           a.question, critic_backups=backups,
+                           draft_truncated=draft_truncated)
 
     if a.verdict:
         w = judge.get("winner")
