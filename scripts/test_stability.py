@@ -83,7 +83,8 @@ def run_redteam_capture(a, backups=None, truncated=False):
     code = None
     with contextlib.redirect_stdout(buf):
         try:
-            code = tt_mod.run_redteam(
+            # v0.17: run_redteam returns (code, spent), not bare code.
+            code, _spent = tt_mod.run_redteam(
                 a, "a draft worth attacking", None, {}, 0.0, 0.0,
                 "the question", critic_backups=backups,
                 draft_truncated=truncated)
