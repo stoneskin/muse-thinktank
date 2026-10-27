@@ -162,19 +162,30 @@ def resolve_free(model_id, known):
 
 
 def health_check(models, key, timeout=20):
-    """Lightweight ping per model before the panel. Returns (alive, spent).
+    """Lightweight ping per model before the panel.
+    Returns (alive, spent, details) where details is one dict per model:
+    {model, ok, error, finish_reason, elapsed, cost}.
     A model that errors or returns empty is dropped for this run.
     Note: max_tokens must be generous (>=50) -- some free models return
-    empty with finish_reason=length when the token budget is tiny."""
-    alive, spent = [], 0.0
+    empty with finish_reason=length when the token budget is tiny.
+    v0.17: details used to be discarded (only "empty response" was
+    logged), which made provider-side failures (e.g. an HTTP 404 from a
+    router) indistinguishable from plain empty replies in post-mortems.
+    """
+    alive, spent, details = [], 0.0, []
     for m in models:
         r = chat(m, [{"role": "user",
                       "content": "Reply with the single word: ok"}],
                  50, 0.0, timeout, key)
         spent += r["cost"]
-        if not r["error"] and r["text"].strip():
+        ok = not r["error"] and bool(r["text"].strip())
+        if ok:
             alive.append(m)
         else:
             log("health-check: %s unavailable (%s), dropped this round"
                 % (m, r["error"] or "empty response"))
-    return alive, spent
+        details.append({"model": m, "ok": ok,
+                        "error": r["error"],
+                        "finish_reason": r["finish_reason"],
+                        "elapsed": r["elapsed"], "cost": r["cost"]})
+    return alive, spent, details

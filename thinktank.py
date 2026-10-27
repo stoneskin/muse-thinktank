@@ -4,6 +4,7 @@ CLI entry point. Core logic lives in the tt/ package.
 """
 
 import argparse
+import atexit
 import concurrent.futures as cf
 import json
 import os
@@ -31,6 +32,7 @@ from tt.members import (
     load_member_state, save_member_state, record_member, record_judge,
     availability, load_capability_scores, select_members,
 )
+from tt.runlog import RunLog, prune_logs
 
 
 # v0.15: tier presets — panel uses cheap models, judge stays strong.
@@ -87,9 +89,15 @@ def _parse_redteam_judge(text):
 
 
 def chat_json_repair(model, msgs, parse, max_tokens, temp, timeout, key,
-                     role="structured"):
+                     role="structured", stats=None):
     """v0.16 (harness stability): one repair retry for JSON-contract roles
     (judge / critic / adjudicator).
+
+    v0.17: if stats (a dict) is given, it is filled with {"attempts": 1|2,
+    "mode": "first-ok"|"repair"|"retry", "first_failure": reason|None} so
+    the run log can tell a contract failure (repair retry, reason fed
+    back) from an empty reply (plain retry) apart. The return tuple is
+    unchanged.
 
     The first reply that fails extraction or validation is fed back with
     the failure reason; the model gets exactly one chance to return ONLY
@@ -116,6 +124,9 @@ def chat_json_repair(model, msgs, parse, max_tokens, temp, timeout, key,
     if not r["error"] and r["text"]:
         obj, ok, reason = parse(r["text"])
         if ok:
+            if stats is not None:
+                stats.update({"attempts": 1, "mode": "first-ok",
+                              "first_failure": None})
             return obj, r, False, total
         log("%s %s contract failure (%s) -- one repair retry"
             % (role, model, reason))
@@ -128,13 +139,18 @@ def chat_json_repair(model, msgs, parse, max_tokens, temp, timeout, key,
                         % reason},
         ]
         mode = "repair"
+        first_failure = reason
     else:
         log("%s %s no usable reply (%s) -- one retry"
             % (role, model, r["error"] or "empty"))
         call2_msgs = msgs
         mode = "retry"
+        first_failure = r["error"] or "empty"
     r2 = chat(model, call2_msgs, max_tokens * 2, temp, timeout, key)
     total += r2["cost"]
+    if stats is not None:
+        stats.update({"attempts": 2, "mode": mode,
+                      "first_failure": first_failure})
     if r2["error"] or not r2["text"]:
         log("%s %s %s attempt failed (%s)"
             % (role, model, mode, r2["error"] or "empty"))
@@ -168,15 +184,21 @@ def truncation_gate(judge, ok_answers):
 
 
 def run_redteam(a, draft, key, member_state, t_start, spent, question,
-                critic_backups=None, draft_truncated=False):
+                critic_backups=None, draft_truncated=False, runlog=None):
     """v0.5 red-team: phase 4 (critics attack draft) + phase 5 (adjudicate).
 
     v0.16: critics and the adjudicator get one contract-repair retry;
     failed critics are substituted from critic_backups (the run's backup
     pool) before the phase gives up; the report header carries a
     completeness line so degradation is visible, not buried in logs.
-    Returns exit code. Prints the attack report; never silently passes.
+    v0.17: if runlog is given, critic/adjudicator outcomes are recorded
+    in it. Returns (exit code, spent) -- spent is returned (not just
+    the code) so the caller can record the true run cost.
+    Prints the attack report; never silently passes.
     """
+    if runlog is not None:
+        runlog.note_phase("red-team-critics")
+    critic_log = []
     t3 = time.time()
     critic_models = ([m.strip() for m in a.critic_models.split(",") if m.strip()]
                      if a.critic_models
@@ -210,15 +232,25 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
             except Exception as e:
                 log("critic %s exception: %s" % (cm, e))
                 failed_critics.append(cm)
+                critic_log.append({"model": cm, "ok": False,
+                                   "repaired": False, "findings": 0,
+                                   "cost": None})
                 continue
             spent += ccost
             if c is None:
                 log("critic %s failed (invalid after repair)" % cm)
                 failed_critics.append(cm)
+                critic_log.append({"model": cm, "ok": False,
+                                   "repaired": False, "findings": 0,
+                                   "cost": ccost})
                 continue
             if repaired:
                 stats["repaired"] += 1
             critic_outputs.append({"model": cm, "findings": c["findings"]})
+            critic_log.append({"model": cm, "ok": True,
+                               "repaired": repaired,
+                               "findings": len(c["findings"]),
+                               "cost": ccost})
             log("critic %s: %d findings%s"
                 % (cm, len(c["findings"]), " (repaired)" if repaired else ""))
     # v0.16: substitution — a failed critic is replaced from the backup
@@ -232,16 +264,26 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
             c, _r, repaired, ccost = run_critic(sub)
         except Exception as e:
             log("critic substitute %s exception: %s" % (sub, e))
+            critic_log.append({"model": sub, "ok": False,
+                               "repaired": False, "findings": 0,
+                               "cost": None})
             continue
         spent += ccost
         if c is None:
             log("critic substitute %s failed too" % sub)
             failed_critics.append(sub)
+            critic_log.append({"model": sub, "ok": False,
+                               "repaired": False, "findings": 0,
+                               "cost": ccost})
             continue
         if repaired:
             stats["repaired"] += 1
         stats["substitutes"] += 1
         critic_outputs.append({"model": sub, "findings": c["findings"]})
+        critic_log.append({"model": sub, "ok": True,
+                           "repaired": repaired,
+                           "findings": len(c["findings"]),
+                           "cost": ccost})
         log("critic substitute %s promoted: %d findings"
             % (sub, len(c["findings"])))
     if spent > a.budget:
@@ -257,6 +299,8 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
 
     # Phase 5: adjudicator grades and filters (v0.16: same repair
     # retry as the critics before falling back to the raw dump)
+    if runlog is not None:
+        runlog.note_phase("red-team-adjudicator")
     t4 = time.time()
     log("phase 5/5 adjudicate: %s" % a.judge_model)
     critics_block = "\n\n".join(
@@ -273,6 +317,10 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
         _parse_redteam_judge, max(1200, a.max_tokens), 0.3,
         a.panel_timeout, key, role="adjudicator")
     spent += acost
+    adjudicator_log = {"ok": aj is not None, "repaired": adj_repaired,
+                       "verdict": aj.get("verdict") if aj else None,
+                       "confidence": aj.get("confidence") if aj else None,
+                       "cost": acost}
     if spent > a.budget:
         log("budget $%.2f exceeded after adjudicator -- aborting" % a.budget)
         raise SystemExit(3)
@@ -323,9 +371,11 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
         print("\n".join(out))
     log("phase 5 done in %.1fs (total %.1fs, spent $%.4f)"
         % (time.time() - t4, time.time() - t_start, spent))
+    if runlog is not None:
+        runlog.set_redteam(critic_log, adjudicator_log)
     if a.member_state:
         save_member_state(a.member_state, member_state)
-    return 0
+    return 0, spent
 
 
 def main():
@@ -491,6 +541,10 @@ def main():
                     help="v0.11: write a versioned JSON run record "
                          "(inputs, models, per-stage outputs, cost, verdict) "
                          "to PATH for audit / replay.")
+    ap.add_argument("--log-dir", default=None,
+                    help="v0.17: directory for the per-run JSON diagnostic "
+                         "log (default: ~/workspace/thinktank-logs/). "
+                         "Logging is best-effort and never fails the run.")
     ap.add_argument("--replay", default=None, metavar="PATH",
                     help="v0.11: offline replay of a run record: validate "
                          "schema + hash, print summary, make zero API calls.")
@@ -585,19 +639,70 @@ def main():
         print("Reply go=start, change=adjust models/budget.")
         return 0
 
+    # ---- v0.17: per-run diagnostic log ----
+    # Created AFTER the estimate early-return above, so estimate runs
+    # (including the wrapper's step-1 estimate) and the --replay/--golden
+    # pre-parses produce no log -- only real runs do. Created BEFORE the
+    # cost fail-closed checks below, so a cost refusal is itself logged
+    # (status aborted, last_phase cost-check) instead of vanishing.
+    # The log never carries the question text, panel texts, context fact
+    # values, API keys, or Authorization headers -- only lengths, counts,
+    # and paths (see tt/runlog.py).
+    # spent is initialized here (not at the old spot below) so the atexit
+    # flush can read it even for cost-refusal runs that exit early.
+    spent = 0.0
+    runlog = RunLog(a.log_dir, {
+        "tier": a.tier,
+        "models_requested": list(models),
+        "models_final": None,
+        "judge_model": a.judge_model,
+        "judge_model2": a.judge_model2,
+        "synth_model": synth_model,
+        "max_tokens": a.max_tokens,
+        "temperature": a.temperature,
+        "panel_timeout": a.panel_timeout,
+        "budget": a.budget,
+        "min_panel": a.min_panel,
+        "red_team": a.red_team,
+        "practitioner": a.practitioner,
+        "context_data_path": a.context_data,
+        "record_path": a.record,
+        "question_length": len(a.question),
+    })
+    runlog.set_estimate(worst, missing, a.budget)
+    prune_logs(runlog.log_dir)
+
+    def _flush_runlog():
+        # Fail-closed exits (SystemExit) still run atexit: an unwritten
+        # log means the run died mid-flight -- record it as aborted
+        # with the last phase reached, so the file shows where it died.
+        # Success paths mark completed and write explicitly before
+        # returning, so this is a no-op for them.
+        if not runlog.written:
+            runlog.mark("aborted")
+            runlog.set_spent(spent)
+            if runlog.data["params"]["models_final"] is None:
+                # Died before the context phase set it: record the
+                # panel as it stood (post-health-check survivors, or
+                # the requested list for cost-refusal runs).
+                runlog.data["params"]["models_final"] = list(models)
+            runlog.write()
+    atexit.register(_flush_runlog)
+
     if worst is None:
+        runlog.note_phase("cost-check")
         print("error: cannot estimate cost for %s (no price table), refusing to start."
               "Provide via --prices {model: {input, output}} ($/1M tokens)."
               % missing, file=sys.stderr)
         raise SystemExit(2)
     if worst > a.budget:
+        runlog.note_phase("cost-check")
         print("error: worst-path cost $%.4f exceeds budget $%.2f, refusing to start."
               % (worst, a.budget), file=sys.stderr)
         raise SystemExit(3)
     log("worst-path cost $%.4f <= budget $%.2f, OK" % (worst, a.budget))
 
     key = api_key()
-    spent = 0.0
     t_start = time.time()
     # v0.4: runtime budget circuit breaker (thread-safe, charge after each API call)
     runtime_budget = RuntimeBudget(a.budget, a.budget_headroom)
@@ -623,11 +728,16 @@ def main():
                 % len(models))
         except Exception as e:
             log("priors fetch failed (%s), continuing without" % e)
+    runlog.note_phase("member-selection")
+    requested_models = list(models)
+    dropped_models = []
     if a.member_state or a.capability_scores or a.priors:
-        models, dropped = select_members(models, member_state, cap_scores)
+        models, dropped_models = select_members(models, member_state,
+                                                cap_scores)
         if not models:
             log("fail-closed: dynamic member selection dropped all models")
             raise SystemExit(2)
+    runlog.set_member_selection(requested_models, models, dropped_models)
 
     # ---- pre-panel health check ----
     backups = ([m.strip() for m in a.backup_models.split(",") if m.strip()]
@@ -644,15 +754,18 @@ def main():
         if backups:
             log("auto-backups from capability scores: %s"
                 % ", ".join(backups))
+    runlog.note_phase("health-check")
     if not a.no_health_check:
-        models, hc_spent = health_check(models, key)
+        models, hc_spent, hc_details = health_check(models, key)
         spent += hc_spent
+        runlog.add_health_check("pre-panel", hc_details)
         # v0.5: promote backups if below min panel size
         # (keep trying backups until min reached or list exhausted)
         while len(models) < a.min_panel and backups:
             need = a.min_panel - len(models)
-            promoted, hc2 = health_check(backups[:need], key)
+            promoted, hc2, hc2_details = health_check(backups[:need], key)
             spent += hc2
+            runlog.add_health_check("backup-promotion", hc2_details)
             n_tried = min(need, len(backups))
             tried = backups[:n_tried]
             backups = backups[n_tried:]
@@ -676,8 +789,11 @@ def main():
 
     # ---- v0.3b: load real-time context data ----
     # v0.10: fail-closed — never run with silently-empty context.
+    runlog.note_phase("context")
+    runlog.data["params"]["models_final"] = list(models)
     ctx_data = load_context_data(a.context_data)
     if ctx_data and ctx_data.get("__error__"):
+        runlog.set_context(a.context_data, 0, 0, ctx_data["__error__"])
         print("error: %s; refusing to run with empty context."
               % ctx_data["__error__"], file=sys.stderr)
         raise SystemExit(2)
@@ -685,11 +801,14 @@ def main():
         n_facts = len(ctx_data.get("facts", {}))
         ctx_chars = sum(len(str(v)) for v in ctx_data.get("facts", {}).values())
         log("real-time data injected: %d facts, %d chars" % (n_facts, ctx_chars))
+        runlog.set_context(a.context_data, n_facts, ctx_chars)
         # v0.10: warn on suspiciously thin context (likely truncated upstream)
         if ctx_chars < 500:
             print("warning: context-data only %d chars — possible truncation; "
                   "panel may review nothing useful." % ctx_chars,
                   file=sys.stderr)
+    else:
+        runlog.set_context(a.context_data, 0, 0)
     panel_question = build_panel_prompt(a.question, ctx_data)
     panel_system = PANEL_SYSTEM if ctx_data else None
 
@@ -769,6 +888,7 @@ def main():
                 % (a.pr_diff, diff, panel_question))
 
     # ---- phase 1: panel ----
+    runlog.note_phase("panel")
     log("phase 1/3 panel: %d models, timeout %gs"
         % (len(models), a.panel_timeout))
     answers = []
@@ -820,7 +940,9 @@ def main():
             i, m = futs[fut]
             if fut in pending:
                 answers.append({"model": m, "text": "", "ok": False,
-                                "error": "timeout", "truncated": False})
+                                "error": "timeout", "truncated": False,
+                                "finish_reason": None, "usage": {},
+                                "elapsed": panel_timeout, "cost": 0.0})
                 done += 1
                 continue
             try:
@@ -839,10 +961,19 @@ def main():
                 raise SystemExit(3)
             if r["error"] or not r["text"]:
                 reason = r["error"] or "empty response"
-                log("[%d/%d] %s FAIL: %s" % (done, len(models), model, reason))
+                # v0.17: finish_reason in the FAIL line itself -- the
+                # 2026-10-26 gap was "empty response" with no way to tell
+                # a reasoning-cap starvation (length) from a plain empty.
+                log("[%d/%d] %s FAIL: %s (finish_reason=%s)"
+                    % (done, len(models), model, reason,
+                       r.get("finish_reason") or "-"))
                 answers.append({"model": model, "text": "",
                                 "ok": False, "error": reason,
-                                "truncated": False})
+                                "truncated": False,
+                                "finish_reason": r.get("finish_reason"),
+                                "usage": r.get("usage") or {},
+                                "elapsed": r.get("elapsed"),
+                                "cost": r.get("cost", 0.0)})
             else:
                 ntok = (r["usage"] or {}).get("total_tokens", "?")
                 trunc = " [truncated]" if r["truncated"] else ""
@@ -851,12 +982,17 @@ def main():
                        r["cost"], trunc))
                 answers.append({"model": model, "text": r["text"],
                                 "ok": True, "error": None,
-                                "truncated": r["truncated"]})
+                                "truncated": r["truncated"],
+                                "finish_reason": r.get("finish_reason"),
+                                "usage": r.get("usage") or {},
+                                "elapsed": r.get("elapsed"),
+                                "cost": r.get("cost", 0.0)})
     answers.sort(key=lambda x: models.index(x["model"]))
     ok_answers = [x for x in answers if x["ok"]]
     phase1_elapsed = time.time() - t_start
     log("phase 1 done in %.1fs -- %d/%d ok, spent $%.4f"
         % (phase1_elapsed, len(ok_answers), len(models), spent))
+    runlog.add_panel(answers)
     if rec:
         for x in answers:
             rec.add_model("panel", x["model"])
@@ -892,8 +1028,9 @@ def main():
         need = a.min_panel - len(ok_answers)
         log("panel %d < min %d, trying %d backups"
             % (len(ok_answers), a.min_panel, min(need, len(backups))))
-        b_models, bhc = health_check(backups[:need], key)
+        b_models, bhc, bhc_details = health_check(backups[:need], key)
         spent += bhc
+        runlog.add_health_check("phase1b-backup", bhc_details)
         backups = backups[need:]
         if b_models:
             # run backups through phase 1
@@ -916,15 +1053,36 @@ def main():
                         r = fut.result()
                     except Exception as e:
                         log("backup %s exception: %s" % (bm, e))
+                        runlog.add_backup({"model": bm, "text": "",
+                                           "ok": False,
+                                           "error": "worker: %s" % e,
+                                           "finish_reason": None,
+                                           "truncated": False, "usage": {},
+                                           "elapsed": None, "cost": 0.0})
                         continue
                     spent += r["cost"]
                     if r["error"] or not r["text"]:
                         log("backup %s failed (%s)"
                             % (bm, r["error"] or "empty"))
+                        runlog.add_backup({"model": bm, "text": "",
+                                           "ok": False,
+                                           "error": r["error"] or "empty",
+                                           "finish_reason":
+                                               r.get("finish_reason"),
+                                           "truncated": False,
+                                           "usage": r.get("usage") or {},
+                                           "elapsed": r.get("elapsed"),
+                                           "cost": r.get("cost", 0.0)})
                         continue
-                    ok_answers.append({"model": bm, "text": r["text"],
-                                       "ok": True, "error": None,
-                                       "truncated": r["truncated"]})
+                    entry = {"model": bm, "text": r["text"],
+                             "ok": True, "error": None,
+                             "truncated": r["truncated"],
+                             "finish_reason": r.get("finish_reason"),
+                             "usage": r.get("usage") or {},
+                             "elapsed": r.get("elapsed"),
+                             "cost": r.get("cost", 0.0)}
+                    ok_answers.append(entry)
+                    runlog.add_backup(entry)
                     log("backup %s promoted to panel" % bm)
     if not ok_answers:
         log("fail-closed: no usable answer from panel -- refusing to synthesize")
@@ -936,6 +1094,7 @@ def main():
     log("estimated %.0fs more for judge + synth" % phase1_elapsed)
 
     # ---- phase 2: judge (v0.3a: dual-judge cross-validation) ----
+    runlog.note_phase("judge")
     t1 = time.time()
     judges = [a.judge_model] + ([a.judge_model2] if a.judge_model2 else [])
     log("phase 2/3 judge: %s" % " + ".join(judges))
@@ -966,6 +1125,7 @@ def main():
                 return None, False, "contract violation"
             return jj, True, ""
 
+        jstats = {}
         j, jr, repaired, jcost = chat_json_repair(
             jm,
             [{"role": "system", "content": JUDGE_SYSTEM},
@@ -973,9 +1133,10 @@ def main():
               "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
                                                answers=ans_block)}],
             _parse_judge, max(900, a.max_tokens), 0.3, a.panel_timeout,
-            key, role="judge")
+            key, role="judge", stats=jstats)
         jr = dict(jr)
         jr["cost"] = jcost
+        jr["repair_stats"] = jstats
         # v0.3a: track judge bias stats
         if j is not None and a.member_state:
             n_acc = sum(1 for d in j["decisions"]
@@ -1042,6 +1203,22 @@ def main():
     entropy = disagreement_entropy(judge, len(ok_answers))
     log("phase 2 done in %.1fs -- entropy=%.1f (spent $%.4f)"
         % (time.time() - t1, entropy, spent))
+    judge_log_entries = []
+    for jm in judges:
+        jr_j, j_j, jrep = judge_results[jm]
+        jstats = (jr_j or {}).get("repair_stats") or {}
+        judge_log_entries.append({
+            "model": jm,
+            "winner": j_j.get("winner") if j_j else None,
+            "confidence": j_j.get("confidence") if j_j else None,
+            "repaired": jrep,
+            "attempts": jstats.get("attempts"),
+            "mode": jstats.get("mode"),
+            "error": jr_j.get("error"),
+            "finish_reason": jr_j.get("finish_reason"),
+            "cost": jr_j.get("cost"),
+        })
+    runlog.set_judge(judge_log_entries, dual_ok, dual_reason, entropy)
     if spent > a.budget:
         log("budget $%.2f exceeded after judge -- aborting" % a.budget)
         raise SystemExit(3)
@@ -1068,6 +1245,7 @@ def main():
     t2 = time.time()
     need_human = judge is None or judge_needs_human(judge)
     if a.show_all or need_human:
+        runlog.note_phase("show-all")
         out = []
         for i, x in enumerate(ok_answers):
             out.append("===== Answer %d · %s =====" % (i, x["model"]))
@@ -1092,6 +1270,10 @@ def main():
         log("phase 3 done in %.1fs -- awaiting human verdict "
             "(total %.1fs, spent $%.4f)"
             % (time.time() - t2, time.time() - t_start, spent))
+        runlog.set_verdict(None, "show-all-human-pending")
+        runlog.set_spent(spent)
+        runlog.mark("completed", "show-all")
+        runlog.write()
         return 0
 
     rej = {d["id"] for d in judge["decisions"]
@@ -1116,22 +1298,53 @@ def main():
         if spent > a.budget:
             log("budget $%.2f exceeded before red-team -- aborting" % a.budget)
             raise SystemExit(3)
-        return run_redteam(a, draft, key, member_state, t_start, spent,
-                           a.question, critic_backups=backups,
-                           draft_truncated=draft_truncated)
+        rt_code, spent = run_redteam(a, draft, key, member_state, t_start,
+                                     spent, a.question,
+                                     critic_backups=backups,
+                                     draft_truncated=draft_truncated,
+                                     runlog=runlog)
+        # v0.17: the red-team path never saved --record (run_redteam does
+        # not receive rec). Save a marker record so the run is auditable.
+        if rec:
+            rec.set_verdict("[red-team report printed to stdout]")
+            rec.save(a.record)
+            log("run record saved: %s" % a.record)
+        runlog.set_verdict(None, "red-team-report-stdout")
+        runlog.set_spent(spent)
+        runlog.mark("completed", "red-team")
+        runlog.write()
+        return rt_code
 
     if a.verdict:
+        runlog.note_phase("verdict")
         w = judge.get("winner")
         if isinstance(w, int) and 0 <= w < len(ok_answers) and w not in rej:
-            print(ok_answers[w]["text"])
+            verdict_text = ok_answers[w]["text"]
+            print(verdict_text)
+            verdict_source = "verdict-branch"
         else:
             log("judge has no clear winner, falling back to side-by-side display")
             for i, x in enumerate(usable):
                 print("===== Answer %d · %s =====\n%s\n"
                       % (i, x["model"], x["text"]))
+            verdict_text = None
+            verdict_source = "verdict-branch-fallback-side-by-side"
+        # v0.17: the --verdict branch never saved --record (it returned
+        # without set_verdict/save) -- that is why wrapper runs with
+        # --verdict produced no record file on 2026-10-26. Fixed here.
+        if rec:
+            rec.set_verdict(verdict_text if verdict_text is not None
+                            else "[no clear winner: side-by-side display]")
+            rec.save(a.record)
+            log("run record saved: %s" % a.record)
+        runlog.set_verdict(verdict_text, verdict_source)
+        runlog.set_spent(spent)
+        runlog.mark("completed", "verdict")
+        runlog.write()
         log("done in %.1fs, spent $%.4f" % (time.time() - t_start, spent))
         return 0
 
+    runlog.note_phase("synth")
     log("phase 3/3 synth: %s" % synth_model)
     judge_for_synth = dict(judge)
     judge_for_synth["decisions"] = [d for d in judge["decisions"]
@@ -1163,6 +1376,15 @@ def main():
         rec.add_cost(sr["cost"])
         rec.save(a.record)
         log("run record saved: %s" % a.record)
+    synth_ok = not (sr["error"] or not sr["text"])
+    runlog.set_synth(synth_model, synth_ok, sr["error"],
+                     sr.get("finish_reason"), sr["cost"],
+                     len(sr["text"] or ""))
+    runlog.set_verdict(sr["text"] if synth_ok else None,
+                       "synth" if synth_ok else "synth-failed-side-by-side")
+    runlog.set_spent(spent)
+    runlog.mark("completed", "synth")
+    runlog.write()
     # v0.3a: persist member stats
     if a.member_state:
         save_member_state(a.member_state, member_state)
