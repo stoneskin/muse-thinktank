@@ -11,6 +11,7 @@
 | cohere/north-mini-code:free | 7 | 14.25 | 14.5 | 代码专长，demo A3 质量最高；**股票 S3 直接拒答（合规过滤）——不进股票阵容**；长 prompt 偶发空返回；health ping 必须 ≥50 tokens；v3.1 量化 14.5 |
 | dots-studio/dots-3-note-preview:free | 14 | 14.25 | 15.5 | 话痨，800 token 被截断；P2 找到 CACHE 无过期（全场仅 3 家）——免费阵容里代码最稳；股票有"卖出一半=零风险"心理会计小瑕疵；**v3.1 免费档量化最高 15.5** |
 | poolside/laguna-xs-2.1:free | 10 | 10 | 5.0 | S2/P2 撞 429；能跑通时是好的免费代码备选，作轮换；v3 S4 后连续 429 出局 |
+| recursive/flint-v1.0:free | — | — | 7.5 | 2026-10-22 新评（v3.1）：40B MoE coding 模型；S4/S5 脚本正确但不给数值（S5 明言"不能替你编数值"，诚实加分）；S6/S7 长题推理烧光 7000 token 空返回熔断——长任务不可靠，只宜短代码题备选 |
 | nvidia/nemotron-3.5-lightning:free | 3 | — | 只输出思考过程、2000 token 写不完结论；不适合要干净结论的任务 |
 | nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free | — | — | 推理模型；judge 任务时吐英文思考过程、指令跟随弱 |
 | google/gemma-4-31b-it:free | — | — | 共享池 429 限流两次，可靠性存疑 |
