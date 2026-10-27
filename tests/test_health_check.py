@@ -23,6 +23,14 @@ def _chat_result(text="", error=None, finish_reason="stop", cost=0.0,
 
 
 class TestHealthCheck(unittest.TestCase):
+    def setUp(self):
+        # v0.18 retries sleep 1s/2s between attempts; neutralize in tests.
+        self._sleep_patch = mock.patch("time.sleep")
+        self._sleep_patch.start()
+
+    def tearDown(self):
+        self._sleep_patch.stop()
+
     def test_normal_reply_kept_with_details(self):
         with mock.patch("tt.transport.chat",
                         return_value=_chat_result("ok")) as m:
@@ -78,10 +86,58 @@ class TestHealthCheck(unittest.TestCase):
         with mock.patch("tt.transport.chat", side_effect=fake_chat):
             alive, spent, details = health_check(["good", "bad"], "key")
         self.assertEqual(alive, ["good"])
-        self.assertAlmostEqual(spent, 0.03)
+        # v0.18: the transient 429 is retried 3x, every attempt is charged.
+        self.assertAlmostEqual(spent, 0.01 + 3 * 0.02)
         self.assertEqual([d["model"] for d in details], ["good", "bad"])
         self.assertTrue(details[0]["ok"])
         self.assertFalse(details[1]["ok"])
+        self.assertEqual(details[0]["attempts"], 1)
+        self.assertEqual(details[1]["attempts"], 3)
+
+    def test_transient_empty_retried_then_recovered(self):
+        # 2026-10-27: both panel models failed one ping, then answered fine.
+        calls = {"n": 0}
+
+        def fake_chat(model, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _chat_result("", finish_reason="")
+            return _chat_result("ok")
+
+        with mock.patch("tt.transport.chat", side_effect=fake_chat):
+            alive, spent, details = health_check(["model-a"], "key")
+        self.assertEqual(alive, ["model-a"])
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(details[0]["attempts"], 2)
+        self.assertTrue(details[0]["ok"])
+
+    def test_permanent_404_not_retried(self):
+        with mock.patch("tt.transport.chat",
+                        return_value=_chat_result(
+                            error="HTTP 404: Not found",
+                            finish_reason="")) as m:
+            alive, spent, details = health_check(["model-a"], "key")
+        self.assertEqual(alive, [])
+        self.assertEqual(m.call_count, 1)
+        self.assertEqual(details[0]["attempts"], 1)
+
+    def test_persistent_transient_dropped_after_all_attempts(self):
+        with mock.patch("tt.transport.chat",
+                        return_value=_chat_result(
+                            error="HTTP 500: boom",
+                            finish_reason="")) as m:
+            alive, spent, details = health_check(["model-a"], "key")
+        self.assertEqual(alive, [])
+        self.assertEqual(m.call_count, 3)
+        self.assertEqual(details[0]["attempts"], 3)
+        self.assertFalse(details[0]["ok"])
+
+    def test_attempts_param_respected(self):
+        with mock.patch("tt.transport.chat",
+                        return_value=_chat_result("", finish_reason="")) as m:
+            alive, _, details = health_check(["model-a"], "key", attempts=1)
+        self.assertEqual(m.call_count, 1)
+        self.assertEqual(details[0]["attempts"], 1)
 
     def test_returns_three_tuple(self):
         with mock.patch("tt.transport.chat",

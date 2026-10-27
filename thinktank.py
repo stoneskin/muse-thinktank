@@ -23,7 +23,9 @@ from tt.contracts import (
     CRITIC_SYSTEM, CRITIC_TEMPLATE, validate_critic,
     REDTEAM_JUDGE_SYSTEM, REDTEAM_JUDGE_TEMPLATE, validate_redteam_judge,
 )
-from tt.budget import BudgetExceeded, RuntimeBudget, load_prices, worst_case_cost
+from tt.budget import (BudgetExceeded, RuntimeBudget, load_prices,
+                      worst_case_cost, effective_max_tokens, synth_cap,
+                      completion_cap)
 from tt.context import (
     PANEL_SYSTEM, PRACTITIONER_PREFIX, load_context_data, sanitize_context,
     build_panel_prompt,
@@ -42,10 +44,10 @@ from tt.runlog import RunLog, prune_logs
 # judge priority: sonnet-5.5 > gemini-3-flash.
 TIER_PRESETS = {
     "free": {
-        "models": ["nvidia/nemotron-3-super-120b-a12b:free",
+        "models": ["nvidia/nemotron-3-super-120b-a12b",
                    "dots-studio/dots-3-note-preview:free"],
         "judge_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "note": "$0; best free panel (super-120b, dots-3) + best free judge (ultra-550b)",
+        "note": "~$0.01/run; super-120b :free delisted 2026-10-27, paid variant kept (prompt $0.30/M, completion $2.40/M); dots-3 + ultra-550b still free",
     },
     "cheap": {
         "models": ["deepseek/deepseek-v3.2",
@@ -163,6 +165,38 @@ def chat_json_repair(model, msgs, parse, max_tokens, temp, timeout, key,
     return None, r2, False, total
 
 
+def panel_call(model, msgs, max_tokens, temp, timeout, key):
+    """v0.18: one panel call with a single retry, mirroring the
+    judge/critic repair-retry (v0.16) that the panel never got.
+
+    The first call uses the model family's effective cap. If it comes
+    back unusable (transport error / empty) or truncated
+    (finish_reason=length -- a reasoning model starved by the cap), one
+    retry runs at double tokens. If the retry also fails, the first
+    partial text (when any) is kept: for free-text panel answers a
+    truncated partial beats an empty slot for the judge. Two failures
+    still means out, per the house circuit-breaker rule.
+    Returns the chat() result dict; the caller charges its cost.
+    """
+    cap = effective_max_tokens(model, max_tokens)
+    r = chat(model, msgs, cap, temp, timeout, key)
+    if not r["error"] and r["text"] and not r["truncated"]:
+        return r
+    reason = r["error"] or ("truncated" if r["truncated"] else "empty response")
+    log("panel %s %s (%s) -- one retry at %d tokens"
+        % (model, "truncated" if r["truncated"] else "no usable reply",
+           reason, cap * 2))
+    r2 = chat(model, msgs, cap * 2, temp, timeout, key)
+    if not r2["error"] and r2["text"]:
+        log("panel %s recovered on retry" % model)
+        return r2
+    if r["text"]:
+        log("panel %s retry failed (%s) -- keeping first partial text"
+            % (model, r2["error"] or "empty"))
+        return r
+    return r2
+
+
 def truncation_gate(judge, ok_answers):
     """v0.16: a truncated answer may still win, but never silently.
 
@@ -220,7 +254,8 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
             cm,
             [{"role": "system", "content": CRITIC_SYSTEM},
              {"role": "user", "content": prompt}],
-            _parse_critic, a.max_tokens, 0.7, a.panel_timeout, key,
+            _parse_critic, effective_max_tokens(cm, a.max_tokens), 0.7,
+            a.panel_timeout, key,
             role="critic")
 
     with cf.ThreadPoolExecutor(max_workers=len(critic_models)) as ex:
@@ -314,7 +349,8 @@ def run_redteam(a, draft, key, member_state, t_start, spent, question,
           "content": REDTEAM_JUDGE_TEMPLATE.format(
               n=len(critic_outputs), critics=critics_block,
               draft=draft[:6000])}],
-        _parse_redteam_judge, max(1200, a.max_tokens), 0.3,
+        _parse_redteam_judge, max(1200, effective_max_tokens(a.judge_model,
+                                                         a.max_tokens)), 0.3,
         a.panel_timeout, key, role="adjudicator")
     spent += acost
     adjudicator_log = {"ok": aj is not None, "repaired": adj_repaired,
@@ -596,25 +632,34 @@ def main():
         raise SystemExit(2)
 
     # ---- pre-run worst-path cost check (fail-closed for money) ----
+    # v0.18: count the injected context in the prompt length -- the
+    # estimate used to see only the bare question (2026-10-23: ~2.7x
+    # underestimate). The context file is read here for length only;
+    # the full load with validation still happens in the context phase.
+    prompt_chars = len(a.question)
+    if a.context_data:
+        try:
+            prompt_chars += len(open(a.context_data, encoding="utf-8").read())
+        except OSError:
+            pass
     prices = load_prices(a.prices)
     worst, missing = worst_case_cost(models, judge_models, synth_model,
                                      a.question, a.max_tokens, prices,
-                                     free_set)
+                                     free_set, prompt_chars=prompt_chars)
 
     if a.estimate:
         n_judges = 2 if a.judge_model2 else 1
         n_calls = len(models) + n_judges + 1  # panel + judges + synth
-        worst_comp = (len(models) * a.max_tokens
-                      + n_judges * max(900, a.max_tokens)
-                      + max(1200, a.max_tokens))
-        judges_str = a.judge_model + (" + " + a.judge_model2
-                                      if a.judge_model2 else "")
+        n_critics = 0
         if a.red_team:
             # v0.5: red-team adds critics + adjudicator, replaces synth
             n_critics = (len(a.critic_models.split(","))
                          if a.critic_models else len(models))
             n_calls = len(models) + n_judges + n_critics + 1
-            worst_comp += n_critics * a.max_tokens + max(1200, a.max_tokens)
+        worst_comp = completion_cap(models, judge_models, synth_model,
+                                    a.max_tokens, n_critics=n_critics)
+        judges_str = a.judge_model + (" + " + a.judge_model2
+                                      if a.judge_model2 else "")
         print("Thinktank run estimate (worst path, v0.5):")
         print("  models: %s" % ", ".join(models))
         print("  judge: %s  synth: %s" % (judges_str, synth_model))
@@ -919,8 +964,8 @@ def main():
                 else PRACTITIONER_PREFIX
         if sys_prompt:
             msgs.insert(0, {"role": "system", "content": sys_prompt})
-        r = chat(model, msgs,
-                 a.max_tokens, a.temperature, a.panel_timeout, key)
+        r = panel_call(model, msgs,
+                       a.max_tokens, a.temperature, a.panel_timeout, key)
         return idx, model, r
 
     # v0.4: global timeout — a stuck panel model can't deadlock the run.
@@ -1041,7 +1086,7 @@ def main():
                     if a.pr_diff and diff:
                         prompt = ("=== PR DIFF ===\n%s\n=== END ===\n\n%s"
                                   % (diff, prompt))
-                    bfuts[ex2.submit(chat, bm,
+                    bfuts[ex2.submit(panel_call, bm,
                                      ([{"role": "system", "content": panel_system}]
                                       if panel_system else []) +
                                      [{"role": "user", "content": prompt}],
@@ -1132,7 +1177,8 @@ def main():
              {"role": "user",
               "content": JUDGE_TEMPLATE.format(n=len(ok_answers),
                                                answers=ans_block)}],
-            _parse_judge, max(900, a.max_tokens), 0.3, a.panel_timeout,
+            _parse_judge, max(900, effective_max_tokens(jm, a.max_tokens)),
+            0.3, a.panel_timeout,
             key, role="judge", stats=jstats)
         jr = dict(jr)
         jr["cost"] = jcost
@@ -1356,7 +1402,7 @@ def main():
                     judge=json.dumps(judge_for_synth, ensure_ascii=False,
                                      indent=2),
                     answers=ans_block)}],
-              max(1200, a.max_tokens), 0.5, a.panel_timeout, key)
+              synth_cap(synth_model, a.max_tokens), 0.5, a.panel_timeout, key)
     spent += sr["cost"]
     if sr["error"] or not sr["text"]:
         log("synth failed (%s) -> degraded side-by-side display" % (sr["error"] or "empty"))

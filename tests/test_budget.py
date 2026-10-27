@@ -8,7 +8,9 @@ membership, never a multi-missing order.
 
 import unittest
 
-from tt.budget import BudgetExceeded, RuntimeBudget, worst_case_cost
+from tt.budget import (BudgetExceeded, RuntimeBudget, worst_case_cost,
+                       load_prices, effective_max_tokens, synth_cap,
+                       completion_cap)
 
 
 class TestWorstCaseCost(unittest.TestCase):
@@ -118,6 +120,82 @@ class TestRuntimeBudget(unittest.TestCase):
         budget.charge(10.0)
         with self.assertRaises(BudgetExceeded):
             budget.charge(0.01)
+
+
+class TestKnownPricesAndFloors(unittest.TestCase):
+    """v0.18: preset paid models are priced by default; per-family token
+    floors; prompt chars counted in the estimate."""
+
+    def test_preset_paid_model_priced_without_explicit_prices(self):
+        total, missing = worst_case_cost(
+            models=["nvidia/nemotron-3-super-120b-a12b"],
+            judge_models=["some/judge:free"],
+            synth_model="some/judge:free",
+            question="q?",
+            max_tokens=500,
+            prices={},
+            free_set=set(),
+        )
+        self.assertIsNone(missing)
+        self.assertGreater(total, 0.0)
+
+    def test_explicit_prices_override_known(self):
+        kw = dict(models=["nvidia/nemotron-3-super-120b-a12b"],
+                  judge_models=[], synth_model="x:free",
+                  question="q?", max_tokens=500, free_set=set())
+        default_total, _ = worst_case_cost(prices={}, **kw)
+        pricey_total, _ = worst_case_cost(
+            prices={"nvidia/nemotron-3-super-120b-a12b":
+                    {"input": 9.0, "output": 9.0}}, **kw)
+        self.assertGreater(pricey_total, default_total)
+
+    def test_load_prices_merges_known_and_spec_wins(self):
+        prices = load_prices(
+            '{"nvidia/nemotron-3-super-120b-a12b": '
+            '{"input": 9.0, "output": 9.0}}')
+        self.assertEqual(
+            prices["nvidia/nemotron-3-super-120b-a12b"],
+            {"input": 9.0, "output": 9.0})
+        self.assertEqual(
+            load_prices(None)["nvidia/nemotron-3-super-120b-a12b"],
+            {"input": 0.30, "output": 2.40})
+
+    def test_token_floors(self):
+        self.assertEqual(effective_max_tokens("openai/gpt-5", 800), 8000)
+        # mini is checked before gpt-5: 4000, not 8000.
+        self.assertEqual(
+            effective_max_tokens("openai/gpt-5-mini", 800), 4000)
+        self.assertEqual(
+            effective_max_tokens("anthropic/claude-sonnet-4", 800), 2500)
+        self.assertEqual(
+            effective_max_tokens("google/gemini-3-flash-preview", 800), 8000)
+        self.assertEqual(effective_max_tokens("some/other-model", 800), 800)
+        # A requested cap above the floor is kept.
+        self.assertEqual(effective_max_tokens("openai/gpt-5", 9000), 9000)
+
+    def test_synth_cap_floor(self):
+        self.assertEqual(synth_cap("some/model", 800), 4000)
+        self.assertEqual(synth_cap("openai/gpt-5", 800), 8000)
+        self.assertEqual(synth_cap("some/model", 5000), 5000)
+
+    def test_prompt_chars_counted_in_cost(self):
+        kw = dict(models=["a/model"], judge_models=[],
+                  synth_model="a/model", max_tokens=500,
+                  prices={"a/model": {"input": 1.0, "output": 1.0}},
+                  free_set=set())
+        small, _ = worst_case_cost(question="x", prompt_chars=4, **kw)
+        big, _ = worst_case_cost(question="x", prompt_chars=40000, **kw)
+        self.assertGreater(big, small)
+
+    def test_completion_cap_mirrors_cost_formula(self):
+        # panel 3x500 + judge 2x900 + synth floor 4000
+        self.assertEqual(
+            completion_cap(["a/model"], ["j/model"], "s/model", 500),
+            1500 + 1800 + 4000)
+        # panel floor applies: 3x8000 for gpt-5
+        self.assertEqual(
+            completion_cap(["openai/gpt-5"], ["j/model"], "s/model", 500),
+            24000 + 1800 + 4000)
 
 
 if __name__ == "__main__":

@@ -161,31 +161,58 @@ def resolve_free(model_id, known):
                      "Refusing: calling it could incur charges." % model_id)
 
 
-def health_check(models, key, timeout=20):
+def _is_permanent_error(error):
+    """HTTP 401/403/404 are permanent: retrying cannot help (bad key,
+    forbidden, or the model id no longer exists on the router)."""
+    return (error or "").startswith(("HTTP 401", "HTTP 403", "HTTP 404"))
+
+
+def health_check(models, key, timeout=20, attempts=3):
     """Lightweight ping per model before the panel.
     Returns (alive, spent, details) where details is one dict per model:
-    {model, ok, error, finish_reason, elapsed, cost}.
+    {model, ok, error, finish_reason, elapsed, cost, attempts}.
     A model that errors or returns empty is dropped for this run.
     Note: max_tokens must be generous (>=50) -- some free models return
     empty with finish_reason=length when the token budget is tiny.
     v0.17: details used to be discarded (only "empty response" was
     logged), which made provider-side failures (e.g. an HTTP 404 from a
     router) indistinguishable from plain empty replies in post-mortems.
+    v0.18: transient failures (empty reply, network error, 429/5xx)
+    retry up to `attempts` times with 1s/2s backoff -- a single empty
+    ping from a flaky free model no longer kills the whole run
+    (2026-10-27: both panel models failed one ping, then answered
+    fine minutes later). Permanent errors (401/403/404) still drop
+    immediately with no retry.
     """
     alive, spent, details = [], 0.0, []
     for m in models:
-        r = chat(m, [{"role": "user",
-                      "content": "Reply with the single word: ok"}],
-                 50, 0.0, timeout, key)
-        spent += r["cost"]
-        ok = not r["error"] and bool(r["text"].strip())
-        if ok:
-            alive.append(m)
-        else:
+        last = None
+        tried = 0
+        for attempt in range(1, attempts + 1):
+            tried = attempt
+            r = chat(m, [{"role": "user",
+                          "content": "Reply with the single word: ok"}],
+                     50, 0.0, timeout, key)
+            spent += r["cost"]
+            last = r
+            if not r["error"] and bool(r["text"].strip()):
+                alive.append(m)
+                break
+            if _is_permanent_error(r["error"]):
+                break
+            if attempt < attempts:
+                log("health-check: %s retry %d/%d (%s)"
+                    % (m, attempt, attempts - 1,
+                       r["error"] or "empty response"))
+                time.sleep(attempt)
+        r = last
+        ok = r is not None and not r["error"] and bool(r["text"].strip())
+        if not ok:
             log("health-check: %s unavailable (%s), dropped this round"
                 % (m, r["error"] or "empty response"))
         details.append({"model": m, "ok": ok,
                         "error": r["error"],
                         "finish_reason": r["finish_reason"],
-                        "elapsed": r["elapsed"], "cost": r["cost"]})
+                        "elapsed": r["elapsed"], "cost": r["cost"],
+                        "attempts": tried})
     return alive, spent, details

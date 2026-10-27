@@ -26,7 +26,7 @@
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # https://openrouter.ai/keys 免费获取
 python3 thinktank.py ask \
-  --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free \
+  --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b \
   --judge-model nvidia/nemotron-3-ultra-550b-a55b:free \
   "分析特斯拉未来3个月的风险"
 ```
