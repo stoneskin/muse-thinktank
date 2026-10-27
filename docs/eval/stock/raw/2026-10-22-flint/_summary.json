@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-22",
+  "results": [
+    {
+      "model": "recursive/flint-v1.0:free",
+      "qid": "S4",
+      "status": "ok",
+      "file": "recursive_flint-v1.0_free__S4.md",
+      "tokens": 5813,
+      "cost": 0.0,
+      "attempts": 1,
+      "error": null
+    },
+    {
+      "model": "recursive/flint-v1.0:free",
+      "qid": "S5",
+      "status": "ok",
+      "file": "recursive_flint-v1.0_free__S5.md",
+      "tokens": 6153,
+      "cost": 0.0,
+      "attempts": 1,
+      "error": null
+    },
+    {
+      "model": "recursive/flint-v1.0:free",
+      "qid": "S6",
+      "status": "fail",
+      "file": "recursive_flint-v1.0_free__S6.md",
+      "tokens": 7686,
+      "cost": 0.0,
+      "attempts": 4,
+      "error": "empty response"
+    },
+    {
+      "model": "recursive/flint-v1.0:free",
+      "qid": "S7",
+      "status": "fail",
+      "file": "recursive_flint-v1.0_free__S7.md",
+      "tokens": 7549,
+      "cost": 0.0,
+      "attempts": 4,
+      "error": "empty response"
+    }
+  ]
+}
