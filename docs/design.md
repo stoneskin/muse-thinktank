@@ -52,6 +52,7 @@
 - 智囊团 panel 默认免费模型；免费池每天 08:00（美东）自动扫描保鲜（cron: `openrouter-free-models-daily-scan`），名单有实质变化才打扰。
 - **Muse可用免费模型省 token**：机械性/草稿性工作（摘要、提取、格式化、初稿、批量分类）Muse可以用免费模型先干；涉及判断、决策、终审和直接给 Stone 的结论，仍由Muse自己来。免费模型的输出Muse负责验——省 token 不省质量责任。
 - `:free` 后缀 fail-closed：缺失后缀视为失败，绝不静默走付费版（FreeToken-Bots 的教训）；池空就报空池。
+- **token 下限（v0.18，2026-10-27）**：按模型族设 completion 下限，`--max-tokens` 只往上加不往下压——gpt-5 8000、gpt-5-mini 4000、claude 2500、gemini 8000；synth 另有 4000 下限。推理模型先烧 hidden reasoning 再出正文，统一下限 800 会饿死（2026-10-23 实测）。
 
 ## 4. 模型能力档案（Stone 2026-10-11 要求）
 
@@ -289,3 +290,15 @@ v0.8 是裸切块（无全局视野）。v0.9 每块都带全局骨架，跨文�
 - [ ] **8 组件审计**：对照 Harness² 的 8 个可编辑组件（System Prompt、Guardrails、Memory、Tool Guidance、Subagents、Skills、Scripts、Plugins）给 thinktank 做一次覆盖检查。已知缺口：Plugins（无插件机制）、Memory（member-state 只记模型分数）、Scripts（tt/*.py 散装）。
 - [ ] **PPC 优化 judge prompt**（Propose-Probe-Compose）：在 golden cases 上提议 judge prompt 变体 → 探测行为差异（不需标准答案）→ 合成最优版。替代手调 prompt。
 - [ ] **member-state 升级**：从"记模型分数"扩展到"记 harness 改动效果"——每次调 prompt/阈值/路由，记录效果涨跌，经验沉淀。
+
+## 15. v0.18 Harness hardening（2026-10-27）
+
+背景：10/23 一轮评审 panel 塌方记的三项账（panel 空回复重试、按模型族设 token 下限、estimate 计入 context）一直没落地；10/27 早一轮实跑又复现三病，还添了两个新病（付费版进 free 档后价格表缺口、synth 截断）。五项同批修，单点真相都在 `tt/budget.py`（价格+下限+预算公式）与 `tt/transport.py`（重试），estimate 与执行同口径，改一处两边一起变：
+
+1. **health check 重试**：瞬时失败（空返回、网络错、429/5xx）最多 3 次、1s/2s 退避；401/403/404 永久错不重试。重试次数记进 runlog（`attempts`）。
+2. **默认价格表**（`KNOWN_PRICES`）：preset 自带的付费模型自带价，`--prices` 显式项优先；`worst_case_cost` 自己合并，不再依赖调用方先过 `load_prices`。
+3. **token 下限**（见 §3.3）：`effective_max_tokens`，judge/critic/adjudicator/panel/备选全走同一函数。
+4. **panel 重试**（`panel_call`）：judge/critic 早有的一次修复重试，panel 补上——空/错/截断（`finish_reason=length`）时 token 翻倍重跑一次；两次都败且首轮有残文时留残文（自由文本残文优于空位，judge 的结构化角色仍按两败出局）。
+5. **estimate 计入 context + synth 下限**：`prompt_chars`（问题 + context 文件）进预算公式；panel 最坏按首轮 + 翻倍重试计（3 倍 cap，与 judge 的 x2 对齐）；synth 上限 `max(4000, 下限)`，与 estimate 的 `completion_cap` 同一函数。
+
+验证：91 单测 + stability 全过；实跑 free 档一轮——health check 当场重试救回一个 panel 模型，panel 2/2、judge、synth 全通，花费 $0.0001，runlog 落盘。

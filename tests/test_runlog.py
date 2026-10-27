@@ -53,7 +53,8 @@ class TestRunLogWrite(unittest.TestCase):
             rl.set_member_selection(["a", "b"], ["a", "b"], [])
             rl.add_health_check("pre-panel", [
                 {"model": "m1", "ok": False, "error": "HTTP 404: x",
-                 "finish_reason": "", "elapsed": 1.2, "cost": 0.0}])
+                 "finish_reason": "", "elapsed": 1.2, "cost": 0.0,
+                 "attempts": 2}])
             rl.add_panel([{"model": "m1", "text": "hello", "ok": True,
                            "error": None, "finish_reason": "stop",
                            "truncated": False,
@@ -85,6 +86,8 @@ class TestRunLogWrite(unittest.TestCase):
                              "first-ok")
             self.assertEqual(data["health_checks"][0]["models"][0]["error"],
                              "HTTP 404: x")
+            self.assertEqual(data["health_checks"][0]["models"][0]["attempts"],
+                             2)
             # No question text, no secrets anywhere in the log.
             blob = json.dumps(data)
             self.assertNotIn("Authorization", blob)

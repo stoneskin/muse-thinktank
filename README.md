@@ -26,7 +26,7 @@ Your question → [panel: N models in parallel] → [judge ×2 cross-validation]
 ```bash
 export OPENROUTER_API_KEY=<redacted>   # get one free at https://openrouter.ai/keys
 python3 thinktank.py ask \
-  --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free \
+  --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b \
   --judge-model nvidia/nemotron-3-ultra-550b-a55b:free \
   "Analyze Tesla's risks over the next 3 months"
 ```

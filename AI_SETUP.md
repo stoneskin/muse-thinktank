@@ -67,7 +67,7 @@ When the user asks to deliberate something:
 3. **Run**:
    ```bash
    python3 thinktank.py ask \
-     --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free \
+     --models nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b \
      --judge-model nvidia/nemotron-3-ultra-550b-a55b:free \
      "question"
    ```

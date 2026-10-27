@@ -149,7 +149,10 @@ class RunLog:
                                          "dropped": list(dropped)}
 
     def add_health_check(self, phase, details):
-        """details: list of {model, ok, error, finish_reason, elapsed, cost}."""
+        """details: list of {model, ok, error, finish_reason, elapsed, cost,
+        attempts}. attempts (v0.18) shows whether the retry saved the
+        model, so a retried-then-ok model is distinguishable from a
+        first-try-ok one in post-mortems."""
         self.data["health_checks"].append({
             "phase": phase,
             "models": [{
@@ -159,6 +162,7 @@ class RunLog:
                 "finish_reason": d.get("finish_reason") or None,
                 "elapsed": d.get("elapsed"),
                 "cost": d.get("cost"),
+                "attempts": d.get("attempts", 1),
             } for d in details],
         })
 
