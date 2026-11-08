@@ -21,15 +21,16 @@ def _result(text="", error=None, finish_reason="stop", cost=0.0):
 
 
 class TestPanelCall(unittest.TestCase):
-    def test_first_ok_single_call_with_floor(self):
+    def test_first_ok_single_call_passthrough(self):
         with mock.patch("thinktank.chat",
                         return_value=_result("answer")) as m:
             r = thinktank.panel_call("openai/gpt-5-mini", [], 800, 0.0,
                                      60, "key")
         self.assertEqual(r["text"], "answer")
         self.assertEqual(m.call_count, 1)
-        # gpt-5-mini floor: 800 -> 4000.
-        self.assertEqual(m.call_args[0][2], 4000)
+        # 2026-11-07: no per-model floors; the requested cap passes
+        # through untouched.
+        self.assertEqual(m.call_args[0][2], 800)
 
     def test_empty_then_ok_retries_at_double_tokens(self):
         with mock.patch("thinktank.chat",

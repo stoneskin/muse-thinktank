@@ -4,13 +4,16 @@ urllib is fully stubbed with unittest.mock: no real network traffic,
 no real API key. The key passed in is a dummy string.
 """
 
+import datetime
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
 
-from tt.transport import chat
+from tt.transport import chat, free_ids
 
 
 def _fake_response(payload):
@@ -111,6 +114,58 @@ class TestChatTruncation(unittest.TestCase):
         self.assertTrue(result["truncated"])
         self.assertEqual(result["finish_reason"], "length")
         self.assertIsNone(result["error"])
+
+
+class TestFreeIds(unittest.TestCase):
+    """Regression: free_ids() referenced two undefined names (2026-11-04).
+
+    The cached-report path used dt.datetime with no datetime import,
+    and the live-fetch path used CATALOG with no such constant, so
+    --free-only crashed before the estimate on both branches.
+    """
+
+    def _write_report(self, checked_at, ids):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"checked_at": checked_at,
+                       "free": [{"id": m} for m in ids]}, f)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_fresh_cached_report_returns_exact_ids(self):
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        path = self._write_report(
+            now, ["stealth/crouton-alpha", "a/b:free"])
+        self.assertEqual(
+            free_ids(path), {"stealth/crouton-alpha", "a/b:free"})
+
+    def test_live_fetch_filters_zero_priced(self):
+        catalog = {"data": [
+            {"id": "stealth/crouton-alpha",
+             "pricing": {"prompt": "0", "completion": "0"}},
+            {"id": "paid/model",
+             "pricing": {"prompt": "0.30", "completion": "2.40"}},
+            {"id": "no-pricing/model"},
+        ]}
+        with mock.patch("tt.transport.urllib.request.urlopen",
+                        return_value=_fake_response(catalog)) as urlopen_mock:
+            result = free_ids(None)
+        self.assertEqual(result, {"stealth/crouton-alpha"})
+        req = urlopen_mock.call_args[0][0]
+        self.assertIn("openrouter.ai/api/v1/models", req.full_url)
+
+    def test_stale_cached_report_falls_back_to_live_fetch(self):
+        stale = (datetime.datetime.now(datetime.timezone.utc)
+                 - datetime.timedelta(hours=25)).isoformat()
+        path = self._write_report(stale, ["old/model:free"])
+        catalog = {"data": [
+            {"id": "stealth/crouton-alpha",
+             "pricing": {"prompt": "0", "completion": "0"}},
+        ]}
+        with mock.patch("tt.transport.urllib.request.urlopen",
+                        return_value=_fake_response(catalog)):
+            result = free_ids(path)
+        self.assertEqual(result, {"stealth/crouton-alpha"})
 
 
 if __name__ == "__main__":

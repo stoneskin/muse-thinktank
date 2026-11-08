@@ -1,5 +1,6 @@
 """v0.4 module: tt/transport.py."""
 
+import datetime as dt
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ import urllib.error
 from .util import log
 
 API = "https://openrouter.ai/api/v1/chat/completions"
+CATALOG = "https://openrouter.ai/api/v1/models"
 
 PR_DIFF_CAP = 12000  # max chars of PR diff injected into prompt
 

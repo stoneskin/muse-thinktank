@@ -50,10 +50,11 @@ TIER_PRESETS = {
         "note": "~$0.01/run; super-120b :free delisted 2026-10-27, paid variant kept (prompt $0.30/M, completion $2.40/M); dots-3 + ultra-550b still free",
     },
     "cheap": {
-        "models": ["deepseek/deepseek-v3.2",
-                   "meta-llama/llama-4-maverick"],
+        "models": ["minimax/minimax-m3.1-flash",
+                   "deepseek/deepseek-v4.1-flash-1017",
+                   "z-ai/glm-5.3-flash"],
         "judge_model": "openai/gpt-5-mini",
-        "note": "~$0.05-0.10/run; stock 15/15 panel, honest judge (quant 18.0)",
+        "note": "~$0.05-0.15/run; 2026-11-07 panel upgrade: three flash models, all cheaper/token than v3.2/maverick and higher-scored (1.000/0.967/0.950); stock 15/15 all, quant 20/20/15; GLM quant S5 fabrication on record — panel only, judge checks numbers",
     },
     "standard": {
         "models": ["minimax/minimax-m3",
@@ -552,7 +553,7 @@ def main():
                     help="v0.4: runtime budget aborts at budget * headroom "
                          "(default 1.1)")
     ap.add_argument("--panel-timeout", type=float, default=120)
-    ap.add_argument("--max-tokens", type=int, default=800)
+    ap.add_argument("--max-tokens", type=int, default=10000)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--free-only", action="store_true",
                     help="fail-closed free-id resolution for panel models")
