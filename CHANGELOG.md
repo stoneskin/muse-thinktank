@@ -6,6 +6,12 @@ Design rationale lives in [docs/design.md](docs/design.md).
 
 ## [Unreleased]
 
+## [v0.19.0] - 2026-11-08
+
+- **Default `--max-tokens` 10000, per-family floors removed**: the 800 default was what starved reasoning models, not the absence of a floor table. `TOKEN_FLOORS` is now an exceptions-only table (empty); add an entry only when a model is measured to need more than 10000. Synth keeps its 4000 floor.
+- **Cheap tier upgraded to three flash models** (2026-11-07 eval, 30 questions, $0.2390): minimax-m3.1-flash (capability 1.000), deepseek-v4.1-flash-1017 (0.967), z-ai-glm-5.3-flash (0.950); judge stays gpt-5-mini. All three are cheaper per token and higher-scored than the outgoing v3.2/maverick pair.
+- **Fix: `--free-only` crashed before the estimate**: `free_ids()` referenced undefined `dt` and `CATALOG`; both are now defined, with `TestFreeIds` regression tests (fresh cache, live fetch, stale fallback).
+
 ## [v0.16.0] - 2026-10-21
 
 - **Harness stability** (incident: 2026-10-21 red-team run shipped with 1/3 critics usable and a truncated winning draft, neither declared in the report):
