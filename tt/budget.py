@@ -64,21 +64,26 @@ def load_prices(spec):
 # when a preset model changes; --prices always overrides.
 KNOWN_PRICES = {
     "nvidia/nemotron-3-super-120b-a12b": {"input": 0.30, "output": 2.40},
+    # 2026-11-07: cheap-tier panel (default-route prices from the /models API).
+    "deepseek/deepseek-v4.1-flash-1017": {"input": 0.15, "output": 0.60},
+    "z-ai/glm-5.3-flash": {"input": 0.15, "output": 0.50},
+    "minimax/minimax-m3.1-flash": {"input": 0.15, "output": 0.60},
+    # Cheap-tier judge (price from docs/model-profiles.md).
+    "openai/gpt-5-mini": {"input": 0.25, "output": 2.00},
 }
 
 
-# v0.18: per-family completion-token floors. Reasoning models burn the
-# cap on hidden reasoning before producing body text, so one global
-# default starves them (2026-10-23: panel default 800 -> empty replies;
-# --max-tokens 8000 revived the same panel 3/3). Floors only raise the
-# cap, never lower it: max_tokens is a ceiling, not usage (2026-10-11
-# rule). First substring match wins -- check gpt-5-mini before gpt-5.
-TOKEN_FLOORS = [
-    ("gpt-5-mini", 4000),
-    ("gpt-5", 8000),
-    ("claude", 2500),
-    ("gemini", 8000),
-]
+# Completion-token floors: exceptions that need MORE than the default.
+# 2026-11-07 (Stone): default --max-tokens is 10000; no per-model
+# numbers. The old per-family table (gpt-5 8000, gpt-5-mini 4000,
+# claude 2500, gemini 8000) is deleted: the 800 default was what
+# starved reasoning models (2026-10-23: panel default 800 -> empty
+# replies; --max-tokens 8000 revived the same panel 3/3), not the
+# absence of a floor. Add an entry here only when a model is measured
+# to need more than the 10000 default. Floors only raise the cap,
+# never lower it: max_tokens is a ceiling, not usage (2026-10-11
+# rule). First substring match wins.
+TOKEN_FLOORS = []
 
 
 def effective_max_tokens(model, requested):

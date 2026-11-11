@@ -161,21 +161,25 @@ class TestKnownPricesAndFloors(unittest.TestCase):
             {"input": 0.30, "output": 2.40})
 
     def test_token_floors(self):
-        self.assertEqual(effective_max_tokens("openai/gpt-5", 800), 8000)
-        # mini is checked before gpt-5: 4000, not 8000.
+        # 2026-11-07: no per-model floors. The default --max-tokens is
+        # 10000, so the floors table is empty; a requested cap passes
+        # through untouched, including for former floor models.
+        self.assertEqual(effective_max_tokens("openai/gpt-5", 800), 800)
         self.assertEqual(
-            effective_max_tokens("openai/gpt-5-mini", 800), 4000)
+            effective_max_tokens("openai/gpt-5-mini", 800), 800)
         self.assertEqual(
-            effective_max_tokens("anthropic/claude-sonnet-4", 800), 2500)
+            effective_max_tokens("anthropic/claude-sonnet-4", 800), 800)
         self.assertEqual(
-            effective_max_tokens("google/gemini-3-flash-preview", 800), 8000)
+            effective_max_tokens("google/gemini-3-flash-preview", 800), 800)
         self.assertEqual(effective_max_tokens("some/other-model", 800), 800)
-        # A requested cap above the floor is kept.
+        # A requested cap above the default is kept.
         self.assertEqual(effective_max_tokens("openai/gpt-5", 9000), 9000)
 
     def test_synth_cap_floor(self):
         self.assertEqual(synth_cap("some/model", 800), 4000)
-        self.assertEqual(synth_cap("openai/gpt-5", 800), 8000)
+        # No gpt-5 floor any more: the synth floor (4000) is the only
+        # raise for a low requested cap.
+        self.assertEqual(synth_cap("openai/gpt-5", 800), 4000)
         self.assertEqual(synth_cap("some/model", 5000), 5000)
 
     def test_prompt_chars_counted_in_cost(self):
@@ -192,10 +196,10 @@ class TestKnownPricesAndFloors(unittest.TestCase):
         self.assertEqual(
             completion_cap(["a/model"], ["j/model"], "s/model", 500),
             1500 + 1800 + 4000)
-        # panel floor applies: 3x8000 for gpt-5
+        # No panel floor any more: gpt-5 behaves like any model.
         self.assertEqual(
             completion_cap(["openai/gpt-5"], ["j/model"], "s/model", 500),
-            24000 + 1800 + 4000)
+            1500 + 1800 + 4000)
 
 
 if __name__ == "__main__":

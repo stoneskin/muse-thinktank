@@ -52,7 +52,7 @@
 - 智囊团 panel 默认免费模型；免费池每天 08:00（美东）自动扫描保鲜（cron: `openrouter-free-models-daily-scan`），名单有实质变化才打扰。
 - **Muse可用免费模型省 token**：机械性/草稿性工作（摘要、提取、格式化、初稿、批量分类）Muse可以用免费模型先干；涉及判断、决策、终审和直接给 Stone 的结论，仍由Muse自己来。免费模型的输出Muse负责验——省 token 不省质量责任。
 - `:free` 后缀 fail-closed：缺失后缀视为失败，绝不静默走付费版（FreeToken-Bots 的教训）；池空就报空池。
-- **token 下限（v0.18，2026-10-27）**：按模型族设 completion 下限，`--max-tokens` 只往上加不往下压——gpt-5 8000、gpt-5-mini 4000、claude 2500、gemini 8000；synth 另有 4000 下限。推理模型先烧 hidden reasoning 再出正文，统一下限 800 会饿死（2026-10-23 实测）。
+- **token 默认（2026-11-07）**：`--max-tokens` 默认 10000，不再逐模型设定下限（v0.18 的 per-family 表已删：800 的默认值才是饿死推理模型的原因，不是缺一张表）。只有实测需要超过 10000 的模型才进 `TOKEN_FLOORS` 例外表；synth 另有 4000 下限。推理模型先烧 hidden reasoning 再出正文（2026-10-23 实测）。
 
 ## 4. 模型能力档案（Stone 2026-10-11 要求）
 
